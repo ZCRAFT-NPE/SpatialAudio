@@ -1,4 +1,3 @@
-// Engine.java
 package dev.thedocruby.resounding;
 
 import dev.thedocruby.resounding.openal.Context;
@@ -142,7 +141,7 @@ public class Engine {
 	private static Vec3 playerPos;
 	private static Vec3 listenerPos;
 	private static LevelChunk soundChunk;
-	private static Vec3 soundPos;
+	public static Vec3 soundPos;
 	private static BlockPos soundBlockPos;
 	private static boolean auxOnly;
 	private static boolean isSpam;
@@ -358,7 +357,8 @@ public class Engine {
 		Double cached = BLOCK_REFLECTIVITY_CACHE.get(key);
 		if (cached != null) return cached;
 
-		double value = pC.reflMap.getOrDefault(
+		double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(blockState);
+		double baseValue = pC.reflMap.getOrDefault(
 				blockState.getBlock().getDescriptionId(),
 				pC.reflMap.getOrDefault(
 						groupToName.getOrDefault(
@@ -368,6 +368,8 @@ public class Engine {
 								"DEFAULT"),
 						pC.defaultRefl)
 		);
+
+		double value = baseValue * (1.0 - absorption);
 
 		BLOCK_REFLECTIVITY_CACHE.put(key, value);
 		return value;
@@ -406,7 +408,8 @@ public class Engine {
 		Vec3 lastHitPos = rayHit.getLocation();
 		Vec3i lastHitNormal = rayHit.getSide().getNormal();
 		Vec3 lastRayDir = dir;
-		double lastBlockReflectivity = getBlockReflectivity(rayHit.getBlockState());
+		BlockState lastHitState = rayHit.getBlockState();
+		double lastBlockReflectivity = getBlockReflectivity(lastHitState);
 
 		int size = 0;
 		double missed = 0;
@@ -437,11 +440,30 @@ public class Engine {
 		if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, finalRayHit.getLocation(), color);
 
 		for (int i = 1; i < pC.nRayBounces; i++) {
-			final Vec3 newRayDir = pseudoReflect(lastRayDir, lastHitNormal);
+			double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(lastHitState);
+			double roughness = BlockPhysicsUtil.getRoughnessCoefficient(lastHitState);
+			double density = BlockPhysicsUtil.getDensityMultiplier(lastHitState);
+
+			if (absorption > 0.7 && Math.random() < absorption * 0.9) {
+				break;
+			}
+
+			if (density < 0.3) {
+				roughness = Math.min(1.0, roughness + (1.0 - density) * 0.5);
+			}
+
+			Vec3 reflectedDir;
+			if (roughness > 0.3) {
+				Vec3 normalVec = new Vec3(lastHitNormal.getX(), lastHitNormal.getY(), lastHitNormal.getZ());
+				reflectedDir = BlockPhysicsUtil.getScatteredDirection(lastRayDir, normalVec, roughness);
+			} else {
+				reflectedDir = pseudoReflect(lastRayDir, lastHitNormal);
+			}
+
 			rayHit = Patch.fixedRaycast(lastHitPos,
-					new Vec3(lastHitPos.x + newRayDir.x * (pC.maxTraceDist - totalDistance),
-							lastHitPos.y + newRayDir.y * (pC.maxTraceDist - totalDistance),
-							lastHitPos.z + newRayDir.z * (pC.maxTraceDist - totalDistance)),
+					new Vec3(lastHitPos.x + reflectedDir.x * (pC.maxTraceDist - totalDistance),
+							lastHitPos.y + reflectedDir.y * (pC.maxTraceDist - totalDistance),
+							lastHitPos.z + reflectedDir.z * (pC.maxTraceDist - totalDistance)),
 					mc.level, lastHitBlock, rayHit.chunk);
 
 			if (rayHit.isMissed()) {
@@ -451,8 +473,19 @@ public class Engine {
 			}
 
 			final Vec3 newRayHitPos = rayHit.getLocation();
-			bounceDistance[i] = lastHitPos.distanceTo(newRayHitPos);
-			totalDistance += bounceDistance[i];
+			double segmentDistance = lastHitPos.distanceTo(newRayHitPos);
+			bounceDistance[i] = segmentDistance;
+			totalDistance += segmentDistance;
+
+			if (absorption > 0.7) {
+				double maxRemainingDistance = pC.maxTraceDist * (1.0 - absorption * 0.7);
+				if (totalDistance > maxRemainingDistance) {
+					if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.DARK_PURPLE.getColor());
+					missed = Math.pow(totalReflectivity, pC.globalReflRcp);
+					break;
+				}
+			}
+
 			if (pC.maxTraceDist - totalDistance < newRayHitPos.distanceTo(listenerPos)) {
 				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.DARK_PURPLE.getColor());
 				missed = Math.pow(totalReflectivity, pC.globalReflRcp);
@@ -468,10 +501,11 @@ public class Engine {
 
 			if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.BLUE.getColor());
 
+			lastHitState = rayHit.getBlockState();
 			lastBlockReflectivity = newBlockReflectivity;
 			lastHitPos = newRayHitPos;
 			lastHitNormal = rayHit.getSide().getNormal();
-			lastRayDir = newRayDir;
+			lastRayDir = reflectedDir;
 			lastHitBlock = rayHit.getBlockPos();
 
 			size = i;
@@ -561,6 +595,16 @@ public class Engine {
 
 		double rcpBounceCount = pC.resolution / bounceCount * pC.globalRvrbGain;
 
+		RoomAcousticsAnalyzer.RoomAnalysis room = null;
+		if (mc != null && mc.level != null) {
+			room = RoomAcousticsAnalyzer.analyzeRoom(mc.level, soundPos);
+
+			if (pC.dLog) {
+				Engine.LOGGER.info("Room analysis: Type={}, Volume={:.1f}, Absorption={:.3f}",
+						room.roomType, room.volume, room.averageAbsorption);
+			}
+		}
+
 		for (ReflectedRayData reflRay : data.reflRays()) {
 			if (reflRay.missed() == 1.0D) continue;
 
@@ -578,14 +622,20 @@ public class Engine {
 						for (up = i + 1; up <= size; up++) {
 							traceUpRefl *= up == size ? 0 : reflRay.bounceReflectivity()[up];
 							if (up != size) traceUpDistance += reflRay.bounceDistance()[up];
-							if (up != size && reflRay.shared()[up] == 1) { traceUpDistance += reflRay.distToPlayer()[up]; break; }
+							if (up != size && reflRay.shared()[up] == 1) {
+								traceUpDistance += reflRay.distToPlayer()[up];
+								break;
+							}
 						}
 
 						int dn; double traceDownRefl = 1; double traceDownDistance = 0;
 						for (dn = i - 1; dn >= -1; dn--) {
 							traceDownRefl *= dn == -1 ? 0 : reflRay.bounceReflectivity()[dn];
 							if (dn != -1) traceDownDistance += reflRay.bounceDistance()[dn + 1];
-							if (dn != -1 && reflRay.shared()[dn] == 1) { traceDownDistance += reflRay.distToPlayer()[dn]; break; }
+							if (dn != -1 && reflRay.shared()[dn] == 1) {
+								traceDownDistance += reflRay.distToPlayer()[dn];
+								break;
+							}
 						}
 
 						if (Math.max(traceDownRefl, traceUpRefl) == traceUpRefl){
@@ -602,41 +652,169 @@ public class Engine {
 			for (int i = 0; i < size; i++) {
 				sharedSum += reflRay.shared()[i];
 
-				final double playerEnergy = Mth.clamp(
-						reflRay.totalBounceEnergy()[i] * (pC.fastShared ? 1 : smoothSharedEnergy[i])
-								* Math.pow(airAbsorptionHF, reflRay.totalBounceDistance()[i] + (pC.fastShared ? reflRay.distToPlayer()[i] : smoothSharedDistance[i]))
-								/ Math.pow(reflRay.totalBounceDistance()[i] + (pC.fastShared ? reflRay.distToPlayer()[i] : smoothSharedDistance[i]), 2.0D * missedSum),
-						0, 1);
+				double baseEnergy = reflRay.totalBounceEnergy()[i];
+				double totalDistance = reflRay.totalBounceDistance()[i] +
+						(pC.fastShared ? reflRay.distToPlayer()[i] : smoothSharedDistance[i]);
 
-				final double bounceTime = reflRay.totalBounceDistance()[i] / speedOfSound;
+				double highFreqAttenuation = Math.pow(0.85, totalDistance / 10.0);
+				double materialAttenuation = 1.0;
 
-				int index = Mth.clamp((int) (1/logBase(Math.max(Math.pow(reflRay.totalBounceEnergy()[i], pC.maxDecayTime / bounceTime * pC.energyFix), Double.MIN_VALUE), minEnergy) * pC.resolution), 0, pC.resolution);
-				sendGain[index] += playerEnergy;
+				if (room != null) {
+					materialAttenuation *= (1.0 - room.averageAbsorption * 0.5);
+
+					if (room.volume > 1000) {
+						double roomSizeFactor = Math.sqrt(room.volume / 1000.0);
+						highFreqAttenuation = Math.pow(0.85, totalDistance * roomSizeFactor / 10.0);
+					}
+				}
+
+				double playerEnergy = baseEnergy *
+						(pC.fastShared ? 1 : smoothSharedEnergy[i]) *
+						Math.pow(airAbsorptionHF, totalDistance) /
+						Math.pow(totalDistance, 2.0 * missedSum) *
+						highFreqAttenuation *
+						materialAttenuation;
+
+				double bounceTime = reflRay.totalBounceDistance()[i] / speedOfSound;
+				double roomTimeFactor = 1.0;
+
+				if (room != null) {
+					if (room.roomType == RoomAcousticsAnalyzer.RoomType.LARGE ||
+							room.roomType == RoomAcousticsAnalyzer.RoomType.HUGE ||
+							room.roomType == RoomAcousticsAnalyzer.RoomType.CATHEDRAL) {
+						roomTimeFactor = 1.5;
+					}
+
+					if (room.averageAbsorption > 0.5) {
+						roomTimeFactor *= (1.0 - room.averageAbsorption * 0.8);
+					}
+				}
+
+				int index = Mth.clamp(
+						(int) (1/logBase(
+								Math.max(
+										Math.pow(reflRay.totalBounceEnergy()[i],
+												pC.maxDecayTime / (bounceTime * roomTimeFactor) * pC.energyFix),
+										Double.MIN_VALUE
+								),
+								minEnergy
+						) * pC.resolution),
+						0,
+						pC.resolution
+				);
+
+				sendGain[index] += Mth.clamp(playerEnergy, 0, 1.0 - Double.MIN_NORMAL);
 			}
 		}
 
 		sharedSum /= bounceCount;
-
 		final double[] sendCutoff = new double[pC.resolution+1];
-		for (int i = 0; i <= pC.resolution; i++) {
-			sendGain[i] = Mth.clamp(sendGain[i] * (inWater ? pC.waterFilt : 1) * (pC.fastShared ? sharedSum : 1) * rcpBounceCount, 0, 1.0 - Double.MIN_NORMAL);
-			sendCutoff[i] = Math.pow(sendGain[i], pC.globalRvrbHFRcp);
+		EchoDetector.EchoAnalysis echoAnalysis = null;
+		if (!data.reflRays().isEmpty()) {
+			echoAnalysis = analyzeEchoesFromRayData(data.reflRays());
 		}
 
-		double occlusion = Patch.fixedRaycast(soundPos, listenerPos, mc.level, soundBlockPos, soundChunk).isMissed() ? 1 : 0;
+		if (echoAnalysis != null && echoAnalysis.hasClearEcho) {
+			for (int i = 0; i < sendGain.length; i++) {
+				if (i < echoAnalysis.echoTimes.size()) {
+					double echoBoost = echoAnalysis.echoAmplitudes.get(i) * 0.5;
+					sendGain[i] = Math.min(1.0, sendGain[i] + echoBoost);
+				}
+			}
+
+			double echoCutoffBoost = Math.min(0.3, echoAnalysis.echoDensity * 0.1);
+			for (int i = 0; i < sendCutoff.length; i++) {
+				sendCutoff[i] = Math.min(1.0, sendCutoff[i] + echoCutoffBoost);
+			}
+
+			if (pC.dLog) {
+				Engine.LOGGER.info("Echo detection: {} echoes, density={:.2f}",
+						echoAnalysis.echoTimes.size(), echoAnalysis.echoDensity);
+			}
+		}
+
+		for (int i = 0; i <= pC.resolution; i++) {
+			sendGain[i] = Mth.clamp(
+					sendGain[i] *
+							(inWater ? pC.waterFilt : 1) *
+							(pC.fastShared ? sharedSum : 1) *
+							rcpBounceCount,
+					0,
+					1.0 - Double.MIN_NORMAL
+			);
+
+			double roomCutoffFactor = 1.0;
+			if (room != null) {
+				roomCutoffFactor = 1.0 - room.averageAbsorption * 0.4;
+			}
+			sendCutoff[i] = Math.pow(sendGain[i], pC.globalRvrbHFRcp * roomCutoffFactor);
+		}
+
+		double occlusion = Patch.fixedRaycast(soundPos, listenerPos, mc.level, soundBlockPos, soundChunk)
+				.isMissed() ? 1 : 0;
 
 		directGain *= Math.pow(airAbsorptionHF, listenerPos.distanceTo(soundPos))
 				/ Math.pow(listenerPos.distanceTo(soundPos), 2.0 * missedSum)
 				* Mth.lerp(occlusion, sharedSum, 1d);
+
+		if (room != null) {
+			if (room.isEnclosed && occlusion == 1) {
+				directGain *= 1.2;
+			}
+
+			if (room.averageAbsorption > 0.3) {
+				directGain *= (1.0 + room.averageAbsorption * 0.3);
+			}
+		}
+
 		double directCutoff = Math.pow(directGain, pC.globalAbsHFRcp);
 
 		SoundProfile profile = new SoundProfile(sourceID, directGain, directCutoff, sendGain, sendCutoff);
 
 		if (pC.eLog || pC.dLog) {
-			LOGGER.info("Processed sound profile:\n{}", profile);
+			Engine.LOGGER.info("Processed sound profile in {} room:\n{}",
+					room != null ? room.roomType : "unknown", profile);
 		}
 
 		return profile;
+	}
+
+	private static EchoDetector.EchoAnalysis analyzeEchoesFromRayData(Set<ReflectedRayData> rayData) {
+		List<Double> echoTimes = new ArrayList<>();
+		List<Double> echoAmplitudes = new ArrayList<>();
+
+		for (ReflectedRayData ray : rayData) {
+			if (ray.size() > 0) {
+				for (int i = 0; i < ray.size(); i++) {
+					double bounceTime = ray.totalBounceDistance()[i] / speedOfSound;
+					double amplitude = ray.totalBounceEnergy()[i];
+
+					if (bounceTime > 0.05 && amplitude > 0.1) {
+						echoTimes.add(bounceTime);
+						echoAmplitudes.add(amplitude);
+					}
+				}
+			}
+		}
+
+		double echoDensity = 0.0;
+		if (echoTimes.size() > 1) {
+			Collections.sort(echoTimes);
+			double timeRange = echoTimes.get(echoTimes.size() - 1) - echoTimes.get(0);
+			if (timeRange > 0.01) {
+				echoDensity = echoTimes.size() / timeRange;
+			}
+		}
+
+		boolean hasClearEcho = false;
+		for (int i = 0; i < echoTimes.size(); i++) {
+			if (echoTimes.get(i) > 0.1 && echoAmplitudes.get(i) > 0.3) {
+				hasClearEcho = true;
+				break;
+			}
+		}
+
+		return new EchoDetector.EchoAnalysis(echoTimes, echoAmplitudes, echoDensity, hasClearEcho);
 	}
 
 	@Environment(EnvType.CLIENT)

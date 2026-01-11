@@ -1,11 +1,15 @@
 package dev.thedocruby.resounding.effects;
 
+import dev.thedocruby.resounding.Engine;
 import dev.thedocruby.resounding.toolbox.*;
 import dev.thedocruby.resounding.openal.*;
 import static dev.thedocruby.resounding.Engine.LOGGER;
 import static dev.thedocruby.resounding.config.PrecomputedConfig.pC;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.openal.EXTEfx;
@@ -18,44 +22,41 @@ public class Reverb extends Effect {
 
 //	private ALset context;
 
-	public void apply(
-			int id,
-			// Effect_properties {
-			float decayTime,
-			float density,
-			float diffusion,
-			float gainHF,
-			float decayHFRatio,
-			float reflectionsGain,
-			float reflectionsDelay,
-			float lateReverbGain,
-			float lateReverbDelay
-			// }
-	)  {
-		int slot   = ALset.slots[id];
-		int effect = ALset.effects[id];
-		// define effects to be applied
-		SIF[] effects = {
-				new SIF("density"            , EXTEfx.AL_EAXREVERB_DENSITY              , density         ),
-				new SIF("diffusion"          , EXTEfx.AL_EAXREVERB_DIFFUSION            , diffusion       ),
-				new SIF("air_absorption_gain", EXTEfx.AL_EAXREVERB_AIR_ABSORPTION_GAINHF, 1f              ),
-				new SIF("late_delay"         , EXTEfx.AL_EAXREVERB_LATE_REVERB_DELAY    , lateReverbDelay ),
-				new SIF("late_gain"          , EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN     , lateReverbGain  ),
-				new SIF("reflections_delay"  , EXTEfx.AL_EAXREVERB_REFLECTIONS_DELAY    , reflectionsDelay),
-				new SIF("reflections_gain"   , EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN     , reflectionsGain ),
-				new SIF("HF_decay_ratio"     , EXTEfx.AL_EAXREVERB_DECAY_HFRATIO        , decayHFRatio    ),
-				new SIF("decay_time"         , EXTEfx.AL_EAXREVERB_DECAY_TIME           , decayTime       ),
-				new SIF("HF_gain"            , EXTEfx.AL_EAXREVERB_GAINHF               , gainHF          )
-		};
-		// iterate and apply them
-		for (SIF ignored : effects) {
-			EXTEfx.alEffectf(effect, SIF.s, SIF.t);
-			ALUtils.errorSet("effect", SIF.f, effect, SIF.t);
+	public void apply(int id, float decayTime, float density, float diffusion,
+					  float gainHF, float decayHFRatio, float reflectionsGain,
+					  float reflectionsDelay, float lateReverbGain, float lateReverbDelay) {
+
+		EchoDetector.EchoAnalysis echoAnalysis = null;
+		if (Engine.mc != null && Engine.mc.level != null && Engine.mc.player != null) {
+			Vec3 listenerPos = Engine.mc.player.getEyePosition();
+			Vec3 soundPos = Engine.soundPos;
+			echoAnalysis = EchoDetector.quickEchoDetection(
+					Engine.mc.level, soundPos, listenerPos);
 		}
-		//Attach updated effect object
-		EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
-		if (pC.dLog && !ALUtils.errorApply("effect", effect, "slot", slot)) {
-			LOGGER.info("Initialized effect.{}", effect);
+
+		if (echoAnalysis != null && echoAnalysis.hasClearEcho) {
+			applyWithEcho(id, echoAnalysis, decayTime, density, diffusion,
+					gainHF, decayHFRatio, reflectionsGain, reflectionsDelay,
+					lateReverbGain, lateReverbDelay);
+		} else {
+			int slot = ALset.slots[id];
+			int effect = ALset.effects[id];
+
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_TIME, decayTime);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DENSITY, density);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, diffusion);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_GAINHF, gainHF);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_HFRATIO, decayHFRatio);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN, reflectionsGain);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_DELAY, reflectionsDelay);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN, lateReverbGain);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_DELAY, lateReverbDelay);
+
+			EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
+
+			if (pC.dLog && !ALUtils.errorApply("effect", effect, "slot", slot)) {
+				LOGGER.info("Applied effect without significant echoes");
+			}
 		}
 	}
 
@@ -89,31 +90,80 @@ public class Reverb extends Effect {
 
 	@Override
 	public ALset update(SlotProfile slot, SoundProfile sound, boolean isGentle) {
-		// Set reverb send filter values and set source to send to all reverb fx slots
+		if (Engine.mc != null && Engine.mc.level != null && Engine.mc.player != null) {
+			Vec3 soundPos = Engine.soundPos;
+			RoomAcousticsAnalyzer.RoomAnalysis room =
+					RoomAcousticsAnalyzer.analyzeRoom(Engine.mc.level, soundPos);
+			adjustReverbForRoom(slot, sound, room);
+		}
+
 		setFilter(sound.sourceID(), slot.slot(), (float) slot.gain(), (float) slot.cutoff());
-		// Set direct filter values
 		setDirect(sound.sourceID(), (float) sound.directGain(), (float) sound.directCutoff(), isGentle);
 		return context;
 	}
 
+	private void adjustReverbForRoom(SlotProfile slot, SoundProfile sound,
+									 RoomAcousticsAnalyzer.RoomAnalysis room) {
+		double rt60 = RoomAcousticsAnalyzer.calculateReverberationTime(room);
+		double earlyDelay = RoomAcousticsAnalyzer.calculateEarlyReflectionsDelay(room);
+		double lateDelay = RoomAcousticsAnalyzer.calculateLateReverbDelay(room);
+		double density = RoomAcousticsAnalyzer.calculateDensity(room);
+		double diffusion = RoomAcousticsAnalyzer.calculateDiffusion(room);
+
+		int slotId = slot.slot();
+		int effectId = ALset.effects[slotId];
+
+		applyRoomAdjustedEffect(slotId, effectId, room, rt60, earlyDelay, lateDelay, density, diffusion);
+	}
+
+	private void applyRoomAdjustedEffect(int id, int effect, RoomAcousticsAnalyzer.RoomAnalysis room,
+										 double rt60, double earlyDelay, double lateDelay,
+										 double density, double diffusion) {
+		int slot = ALset.slots[id];
+		float decayTime = (float) Math.max(0.1, Math.min(20.0, rt60));
+		float reflectionsGain = (float) Math.max(0.05, 0.5 * (1.0 - room.averageAbsorption));
+		double volumeFactor = Math.min(1.0, room.volume / 10000.0);
+		float lateReverbGain = (float) (0.618 + Math.sqrt(volumeFactor));
+
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_TIME, decayTime);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DENSITY, (float)density);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, (float)diffusion);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN, reflectionsGain);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_DELAY, (float)earlyDelay);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN, lateReverbGain);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_DELAY, (float)lateDelay);
+
+		float gainHF = (float) Math.max(0.1, 0.95 - room.averageAbsorption * 0.7);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_GAINHF, gainHF);
+
+		EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
+
+		if (pC.dLog && !ALUtils.errorApply("effect", effect, "slot", slot)) {
+			LOGGER.info("Adjusted effect.{} for room type: {}", effect, room.roomType);
+		}
+	}
 
 	@Override
 	public boolean init() {
 		boolean success;
 		for(int i = 1; i <= pC.resolution; i++){
 			double t = (double) i / pC.resolution;
+
+			double woolRoomFactor = calculateWoolRoomPhysicalFactor();
+
 			apply(i - 1,
-					(float) Math.max(t * pC.maxDecayTime, 0.1),          // decayTime
-					(float) (t * 0.5 + 0.5),                             // density
-					(float) Mth.lerp(pC.rvrbDiff, 1-t, 1),        // diffusion
-					(float) (0.95 - (0.75 * t)),                         // gainHF
-					(float) Math.max(0.95 - (0.3 * t), 0.1),             // decayHFRatio
-					(float) Math.max(Math.pow(1 - t, 0.5) + 0.618, 0.1), // reflectionsGain
-					(float) (t * 0.01),                                  // reflectionsDelay
-					(float) (Math.pow(t, 0.5) + 0.618),                  // lateReverbGain
-					(float) (t * 0.01)                                   // lateReverbDelay
+					(float) Math.max(t * pC.maxDecayTime * woolRoomFactor, 0.05),
+					(float) ((t * 0.5 + 0.5) * woolRoomFactor),
+					(float) Mth.lerp(pC.rvrbDiff * woolRoomFactor, 1-t, 1),
+					(float) (0.95 - (0.75 * t * woolRoomFactor)),
+					(float) Math.max(0.95 - (0.3 * t * woolRoomFactor), 0.05),
+					(float) Math.max(Math.pow(1 - t, 0.5) + 0.618, 0.05) * (float)woolRoomFactor,
+					(float) (t * 0.01),
+					(float) (Math.pow(t, 0.5) + 0.618) * (float)woolRoomFactor,
+					(float) (t * 0.01)
 			);
 		}
+
 		EXTEfx.alFilteri(ALset.direct, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
 		success = !ALUtils.checkErrors("Failed to initialize direct filter object!");
 		if (success) {
@@ -121,9 +171,95 @@ public class Reverb extends Effect {
 			return success;
 		}
 		LOGGER.info("Failed to properly initialize OpenAL Auxiliary Effect slots. Aborting");
-		// TODO ? what ?
-		// efxEnabled = false;
 		return success;
 	}
 
+	public void applyWithEcho(int id, EchoDetector.EchoAnalysis echoAnalysis,
+							  float decayTime, float density, float diffusion,
+							  float gainHF, float decayHFRatio, float reflectionsGain,
+							  float reflectionsDelay, float lateReverbGain, float lateReverbDelay) {
+
+		int slot = ALset.slots[id];
+		int effect = ALset.effects[id];
+
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_TIME, decayTime);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DENSITY, density);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, diffusion);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_GAINHF, gainHF);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_HFRATIO, decayHFRatio);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN, reflectionsGain);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_DELAY, reflectionsDelay);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN, lateReverbGain);
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_DELAY, lateReverbDelay);
+
+		if (echoAnalysis.hasClearEcho && echoAnalysis.echoTimes.size() > 0) {
+			float echoTime = (float) echoAnalysis.echoTimes.get(0).doubleValue(); // 第一个明显回声的时间
+			float echoDepth = (float) Math.min(1.0, echoAnalysis.echoDensity * 0.5);
+
+			try {
+				EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_ECHO_TIME, echoTime);
+				EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_ECHO_DEPTH, echoDepth);
+
+				float modulationTime = echoTime * 2.0f;
+				float modulationDepth = echoDepth * 0.3f;
+				EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_MODULATION_TIME, modulationTime);
+				EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_MODULATION_DEPTH, modulationDepth);
+
+			} catch (Exception e) {
+				if (echoDepth > 0.3) {
+					EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DENSITY, Math.min(1.0f, density + echoDepth * 0.3f));
+					EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, Math.min(1.0f, diffusion + echoDepth * 0.2f));
+					EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN,
+							reflectionsGain * (1.0f + echoDepth * 0.5f));
+				}
+			}
+		}
+
+		EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
+
+		if (pC.dLog && !ALUtils.errorApply("effect", effect, "slot", slot)) {
+			LOGGER.info("Applied effect with echo detection. Echoes: {}",
+					echoAnalysis.echoTimes.size());
+		}
+	}
+
+	private double calculateWoolRoomPhysicalFactor() {
+		if (Engine.mc == null || Engine.mc.player == null || Engine.mc.level == null) {
+			return 1.0;
+		}
+
+		Vec3 playerPos = Engine.mc.player.position();
+		BlockPos center = BlockPos.containing(playerPos);
+
+		double totalAbsorption = 0.0;
+		int sampleCount = 0;
+
+		int radius = 6;
+		for (int x = -radius; x <= radius; x++) {
+			for (int y = -radius; y <= radius; y++) {
+				for (int z = -radius; z <= radius; z++) {
+					BlockPos pos = center.offset(x, y, z);
+					if (Engine.mc.level.isLoaded(pos)) {
+						BlockState state = Engine.mc.level.getBlockState(pos);
+						double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+						double distance = Math.sqrt(x*x + y*y + z*z);
+						double weight = 1.0 / (distance + 1.0);
+
+						totalAbsorption += absorption * weight;
+						sampleCount++;
+					}
+				}
+			}
+		}
+
+		if (sampleCount == 0) return 1.0;
+
+		double avgAbsorption = totalAbsorption / sampleCount;
+
+		if (avgAbsorption > 0.6) {
+			return Math.max(0.1, 1.0 - avgAbsorption * 0.8);
+		}
+
+		return 1.0;
+	}
 }

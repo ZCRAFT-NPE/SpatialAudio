@@ -6,8 +6,8 @@
   "description": "A New Minecraft mod that provides realistic audio physics using parallel wave tracing and an improved physics algorithm.",
   "authors": ["Dr. Rubisco (@thedocruby), ZCRAFT"],
   "contact": {
-    "sources": "https://github.com/thedocruby/resounding",
-    "issues": "https://github.com/thedocruby/resounding/issues"
+    "sources": "https://github.com/ZCRAFT-NPE/SpatialAudio",
+    "issues": "https://github.com/ZCRAFT-NPE/SpatialAudio/issues"
   },
   "license": "LGPL-3.0",
   "icon": "assets/spatialaudio/icon.png",
