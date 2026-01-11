@@ -10,10 +10,17 @@ import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.openal.EXTEfx;
 
+// this effect adds reverberation - sorta like echo, but instead of hearing the
+// sound again, you're hearing it travel away from you.
 public class Reverb extends Effect {
+
+	//	public Reverb() {}
+
+//	private ALset context;
 
 	public void apply(
 			int id,
+			// Effect_properties {
 			float decayTime,
 			float density,
 			float diffusion,
@@ -23,10 +30,11 @@ public class Reverb extends Effect {
 			float reflectionsDelay,
 			float lateReverbGain,
 			float lateReverbDelay
+			// }
 	)  {
 		int slot   = ALset.slots[id];
 		int effect = ALset.effects[id];
-
+		// define effects to be applied
 		SIF[] effects = {
 				new SIF("density"            , EXTEfx.AL_EAXREVERB_DENSITY              , density         ),
 				new SIF("diffusion"          , EXTEfx.AL_EAXREVERB_DIFFUSION            , diffusion       ),
@@ -39,18 +47,20 @@ public class Reverb extends Effect {
 				new SIF("decay_time"         , EXTEfx.AL_EAXREVERB_DECAY_TIME           , decayTime       ),
 				new SIF("HF_gain"            , EXTEfx.AL_EAXREVERB_GAINHF               , gainHF          )
 		};
-		for (SIF sif : effects) {
-			EXTEfx.alEffectf(effect, sif.s, sif.t);
-			ALUtils.errorSet("effect", sif.f, effect, sif.t);
+		// iterate and apply them
+		for (SIF ignored : effects) {
+			EXTEfx.alEffectf(effect, SIF.s, SIF.t);
+			ALUtils.errorSet("effect", SIF.f, effect, SIF.t);
 		}
+		//Attach updated effect object
 		EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
 		if (pC.dLog && !ALUtils.errorApply("effect", effect, "slot", slot)) {
 			LOGGER.info("Initialized effect.{}", effect);
 		}
 	}
 
-	public void lowpass(int filter, float gain, float cutoff) {
-		if (Float.isNaN(gain)) gain = 1.0f;
+	public void lowpass(int   filter, float gain, float cutoff) {  // Set reverb send filter values and set source to send to all reverb fx slots
+		if (Float.isNaN(gain  )) gain   = 1.0f;
 		if (Float.isNaN(cutoff)) cutoff = 1.0f;
 		EXTEfx.alFilterf(filter, EXTEfx.AL_LOWPASS_GAIN, gain);
 		ALUtils.errorProperty("filter", filter, "gain", gain);
@@ -58,19 +68,12 @@ public class Reverb extends Effect {
 		EXTEfx.alFilterf(filter, EXTEfx.AL_LOWPASS_GAINHF, cutoff);
 		ALUtils.errorProperty("filter", filter, "cutoff", cutoff);
 	}
-
 	public void setFilter(int source, int id, float gain, float cutoff) {
 		final int filter = ALset.filters[id];
 		final int slot   = ALset.slots[id];
 		lowpass(filter, gain, cutoff);
-
-		try {
-			int reverbSlot = Mth.clamp(id, 0, ALset.slots.length - 1);
-			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, reverbSlot, 0, filter);
-		} catch (Exception e) {
-			AL10.alSourcei(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slot);
-		}
-
+		// TODO: figure out how to properly use `AL11.alSource3i(` so i don't have to predetermine reverb.
+		AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slot, 1, filter);
 		ALUtils.errorApply(new String[]{"filter", "slot"}, new int[]{filter, slot}, "source", source);
 	}
 
@@ -86,13 +89,16 @@ public class Reverb extends Effect {
 
 	@Override
 	public ALset update(SlotProfile slot, SoundProfile sound, boolean isGentle) {
+		// Set reverb send filter values and set source to send to all reverb fx slots
 		setFilter(sound.sourceID(), slot.slot(), (float) slot.gain(), (float) slot.cutoff());
+		// Set direct filter values
 		setDirect(sound.sourceID(), (float) sound.directGain(), (float) sound.directCutoff(), isGentle);
 		return context;
 	}
 
+
 	@Override
-	public void init() {
+	public boolean init() {
 		boolean success;
 		for(int i = 1; i <= pC.resolution; i++){
 			double t = (double) i / pC.resolution;
@@ -112,20 +118,12 @@ public class Reverb extends Effect {
 		success = !ALUtils.checkErrors("Failed to initialize direct filter object!");
 		if (success) {
 			if (pC.dLog) LOGGER.info("Finished initializing OpenAL Auxiliary Effect slots!");
-			return;
+			return success;
 		}
-		LOGGER.warn("Some errors occurred during OpenAL Auxiliary Effect slots initialization, but continuing anyway.");
+		LOGGER.info("Failed to properly initialize OpenAL Auxiliary Effect slots. Aborting");
+		// TODO ? what ?
+		// efxEnabled = false;
+		return success;
 	}
 
-	private static class SIF {
-		public final String f;
-		public final int s;
-		public final float t;
-
-		public SIF(String f, int s, float t) {
-			this.f = f;
-			this.s = s;
-			this.t = t;
-		}
-	}
 }

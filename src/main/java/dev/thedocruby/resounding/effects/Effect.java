@@ -22,7 +22,8 @@ public class Effect extends Utils {
 	public  String  name   = ""   ;
 	public  boolean active = false;
 
-	public void init() {
+	public boolean init() {
+		return false;
 	}
 
     public  ALset   setup(final long id) {

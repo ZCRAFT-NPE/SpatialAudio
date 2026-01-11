@@ -23,11 +23,11 @@
       "dev.thedocruby.resounding.config.BlueTapePack.ModMenuIntegration"
     ],
     "voicechat": [
-      "dev.thedocruby.resounding.Plugin"
+      "dev.thedocruby.resounding.compat.voicechat.Plugin"
     ]
   },
   "mixins": [
-    "resounding.mixins.json",
+    "spatialaudio.mixins.json",
     "bluetapepack.mixins.json"
   ],
   "depends": {

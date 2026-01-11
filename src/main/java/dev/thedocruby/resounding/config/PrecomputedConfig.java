@@ -23,6 +23,9 @@ public class PrecomputedConfig {
     private static final Map<String, MaterialData> MATERIAL_DEFAULTS = createMaterialDefaults();
 
     @Environment(EnvType.CLIENT)
+    public int maxSoundSources = 64;
+
+    @Environment(EnvType.CLIENT)
     public static Map<String, MaterialData> materialDefaults() {
         return MATERIAL_DEFAULTS;
     }
@@ -176,6 +179,7 @@ public class PrecomputedConfig {
         if(Engine.env == EnvType.CLIENT) {
             long startTime = System.nanoTime();
 
+            maxSoundSources = c.quality.maxSoundSources;
             globalRvrbGain = Mth.clamp(c.general.globalReverbGain/100d, 0.0d, 1.0d);
             energyFix = 1 / Math.max(c.general.globalReverbStrength, Double.MIN_NORMAL);
             resolution = c.quality.reverbResolution;

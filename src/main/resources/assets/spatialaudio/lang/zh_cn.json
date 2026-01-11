@@ -24,6 +24,7 @@
   "text.autoconfig.spatialaudio.option.quality.soundSimulationDistance": "声音模拟距离",
   "text.autoconfig.spatialaudio.option.quality.rayLength": "射线长度",
   "text.autoconfig.spatialaudio.option.quality.sourceRefreshRate": "声源刷新间隔",
+  "text.autoconfig.spatialaudio.option.quality.maxSoundSources": "最大声音源数",
 
   "text.autoconfig.spatialaudio.option.effects.airAbsorption": "空气吸声",
   "text.autoconfig.spatialaudio.option.effects.humidityAbsorption": "湿度吸声",

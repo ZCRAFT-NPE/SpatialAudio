@@ -24,6 +24,13 @@
   "text.autoconfig.spatialaudio.option.quality.soundSimulationDistance": "Sound simulation distance",
   "text.autoconfig.spatialaudio.option.quality.rayLength": "Ray length",
   "text.autoconfig.spatialaudio.option.quality.sourceRefreshRate": "Sound refresh interval",
+  "text.autoconfig.spatialaudio.option.quality.maxSoundSources": "Max Sound Sources",
+  "text.autoconfig.spatialaudio.option.quality.@Tooltip[0]": "Maximum number of simultaneous sound sources.",
+  "text.autoconfig.spatialaudio.option.quality.@Tooltip[1]": "§7[•]§r Range: 8 - 256",
+  "text.autoconfig.spatialaudio.option.quality.@Tooltip[2]": "§7[•]§r Prevents OpenAL from running out of memory when too many sounds play at once.",
+  "text.autoconfig.spatialaudio.option.quality.@Tooltip[3]": "§c[ ! ]§r Lower values may cause some sounds to not play.",
+  "text.autoconfig.spatialaudio.option.quality.@Tooltip[4]": "§c[ ! ]§r Higher values may cause 'Unable to allocate memory' errors.",
+  "text.autoconfig.spatialaudio.option.quality.@Tooltip[5]": "§a[+]§r Default: 64",
 
   "text.autoconfig.spatialaudio.option.effects.airAbsorption": "Sound absorption by air",
   "text.autoconfig.spatialaudio.option.effects.humidityAbsorption": "Sound absorption by humidity",

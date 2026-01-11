@@ -23,7 +23,7 @@ import java.util.function.Consumer;
 @Environment(EnvType.CLIENT)
 public class Context extends Utils {
 
-	private ALset[] contexts;
+	public ALset[] contexts;
 	public  boolean active  = false;
 	public  boolean enabled = true ;
 	public  boolean garbage = false;
@@ -50,15 +50,7 @@ public class Context extends Utils {
 
 	private void populateEffects() {
 		effects = new Effect[] {
-				new Reverb(),
-
-				new Occlusion(),
-				new Doppler(),
-				new Resonance(),
-				new Water(),
-				new Atmosphere(),
-				new Echo(),
-				new Travel()
+				new Reverb()
 		};
 		contexts = new ALset[effects.length];
 	}

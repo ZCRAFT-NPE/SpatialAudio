@@ -109,6 +109,10 @@ public class ResoundingConfig implements ConfigData {
         @Comment("The number of extra ray bounces to trace to determine reverberation for each sound source.\n§7[•]§r Range: 2 - 32\n§7[•]§r More bounces provides more echo and sound ducting but takes more time to calculate.\n§7[•]§r Capped by max tracing distance.\n§c[ ! ]§r Performance Impact: High")
         public int envEvalRayBounces = 4;
 
+        @ConfigEntry.BoundedDiscrete(max = 256, min = 8)
+        @Comment("Maximum number of simultaneous sound sources.\n§7[•]§r Range: 8 - 256\n§7[•]§r Prevents OpenAL from running out of memory when too many sounds play at once.\n§c[ ! ]§r Lower values may cause some sounds to not play.\n§c[ ! ]§r Higher values may cause 'Unable to allocate memory' errors.\n§a[+]§r Default: 64")
+        public int maxSoundSources = 64;
+
         @Comment("The maximum length of each traced ray, per each bounce, in chunks.\n§7[•]§r Range: 1.0 - 16.0\n§7[•]§r For the best balance of performance and quality, increase this:\n      - When you increase the sound simulation distance\n      - When you decrease the number of ray reflections.\n      - If you often find yourself in large enclosed spaces,\n        e.g. large 1.18 caves, or large open buildings.\n§e[-]§r Performance Impact: Moderate")
         public double rayLength = 4.0;
 

@@ -22,89 +22,98 @@ public class Renderer {
 
 	private Renderer() {}
 
-	private static final List<Ray> rays = new CopyOnWriteArrayList<>();
+	private static final List<RaySegment> raySegments = new CopyOnWriteArrayList<>();
 
-	public static void renderRays(double x, double y, double z, Level world) {
-		if (world == null) {
+	public static void renderRays(double cameraX, double cameraY, double cameraZ, Level world) {
+		if (world == null || raySegments.isEmpty()) {
 			return;
 		}
+
 		long gameTime = world.getGameTime();
-		for (Ray ray : rays) {
-			if (ray.tickCreated == -1) ray.tickCreated = gameTime;
-			renderRay(ray, x, y, z);
+
+		// 移除过期的射线
+		raySegments.removeIf(ray -> (gameTime - ray.createdAt) > ray.lifespanTicks);
+
+		if (raySegments.isEmpty()) {
+			return;
 		}
-		rays.removeIf(ray -> (gameTime - ray.tickCreated) > ray.lifespan || (gameTime - ray.tickCreated) < 0L);
+
+		RenderSystem.enableDepthTest();
+		RenderSystem.depthMask(true);
+		RenderSystem.setShader(GameRenderer::getPositionColorShader);
+		RenderSystem.lineWidth(1.5f);
+
+		Tesselator tesselator = Tesselator.getInstance();
+		BufferBuilder buffer = tesselator.getBuilder();
+
+		// 开始批量渲染所有射线
+		buffer.begin(VertexFormat.Mode.DEBUG_LINES, DefaultVertexFormat.POSITION_COLOR);
+
+		for (RaySegment ray : raySegments) {
+			// 计算相对于相机的位置
+			double startX = ray.start.x - cameraX;
+			double startY = ray.start.y - cameraY;
+			double startZ = ray.start.z - cameraZ;
+			double endX = ray.end.x - cameraX;
+			double endY = ray.end.y - cameraY;
+			double endZ = ray.end.z - cameraZ;
+
+			// 解析颜色
+			int r = (ray.color >> 16) & 0xFF;
+			int g = (ray.color >> 8) & 0xFF;
+			int b = ray.color & 0xFF;
+			int alpha = 200; // 半透明
+
+			// 添加起点和终点
+			buffer.vertex(startX, startY, startZ).color(r, g, b, alpha).endVertex();
+			buffer.vertex(endX, endY, endZ).color(r, g, b, alpha).endVertex();
+		}
+
+		tesselator.end();
+
+		// 恢复渲染状态
+		RenderSystem.lineWidth(1.0f);
 	}
 
 	public static void addSoundBounceRay(Vec3 start, Vec3 end, int color) {
 		if (!pC.dRays) {
 			return;
 		}
-		addRay(start, end, color, false);
+		addRaySegment(start, end, color, 40); // 2秒生命周期
 	}
 
 	public static void addOcclusionRay(Vec3 start, Vec3 end, int color) {
 		if (!pC.dRays) {
 			return;
 		}
-		addRay(start, end, color, true);
+		addRaySegment(start, end, color, 40);
 	}
 
-	public static void addRay(Vec3 start, Vec3 end, int color, boolean throughWalls) {
-		rays.add(new Ray(start, end, color, throughWalls));
+	public static void addRaySegment(Vec3 start, Vec3 end, int color, int lifespanTicks) {
+		raySegments.add(new RaySegment(start, end, color, lifespanTicks));
 	}
 
-	public static void renderRay(@NotNull Ray ray, double x, double y, double z) {
-		int red = getRed(ray.color);
-		int green = getGreen(ray.color);
-		int blue = getBlue(ray.color);
-
-		if (!ray.throughWalls) {
-			RenderSystem.enableDepthTest();
-		}
-		RenderSystem.setShader(GameRenderer::getPositionColorShader);
-		Tesselator tesselator = Tesselator.getInstance();
-		BufferBuilder bufferBuilder = tesselator.getBuilder();
-		RenderSystem.disableBlend();
-		RenderSystem.lineWidth(ray.throughWalls ? 3F : 0.25F);
-
-		bufferBuilder.begin(VertexFormat.Mode.DEBUG_LINE_STRIP, DefaultVertexFormat.POSITION_COLOR);
-
-		bufferBuilder.vertex(ray.start.x - x, ray.start.y - y, ray.start.z - z).color(red, green, blue, 255).endVertex();
-		bufferBuilder.vertex(ray.end.x - x, ray.end.y - y, ray.end.z - z).color(red, green, blue, 255).endVertex();
-
-		tesselator.end();
-		RenderSystem.lineWidth(1F);
-		RenderSystem.enableBlend();
+	public static void clearAllRays() {
+		raySegments.clear();
 	}
 
-	private static int getRed(int argb) {
-		return (argb >> 16) & 0xFF;
+	public static int getActiveRayCount() {
+		return raySegments.size();
 	}
 
-	private static int getGreen(int argb) {
-		return (argb >> 8) & 0xFF;
-	}
-
-	private static int getBlue(int argb) {
-		return argb & 0xFF;
-	}
-
-	private static class Ray {
+	private static class RaySegment {
 		private final Vec3 start;
 		private final Vec3 end;
 		private final int color;
-		private long tickCreated;
-		private final long lifespan;
-		private final boolean throughWalls;
+		private final long createdAt;
+		private final int lifespanTicks;
 
-		public Ray(Vec3 start, Vec3 end, int color, boolean throughWalls) {
+		public RaySegment(Vec3 start, Vec3 end, int color, int lifespanTicks) {
 			this.start = start;
 			this.end = end;
 			this.color = color;
-			this.throughWalls = throughWalls;
-			this.tickCreated = -1;
-			this.lifespan = 20 * 2;
+			this.createdAt = System.currentTimeMillis() / 50; // 转换为游戏刻（20刻/秒）
+			this.lifespanTicks = lifespanTicks;
 		}
 	}
 }

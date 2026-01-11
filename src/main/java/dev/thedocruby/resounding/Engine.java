@@ -153,6 +153,10 @@ public class Engine {
 	private static final ThreadLocal<double[]> MATH_ARRAYS = ThreadLocal.withInitial(() -> new double[16]);
 	private static final ThreadLocal<Vec3[]> VEC3_POOL = ThreadLocal.withInitial(() -> new Vec3[8]);
 
+	private static final Set<Integer> activeSourceIDs = Collections.newSetFromMap(new ConcurrentHashMap<>());
+	private static int totalSoundRequests = 0;
+	private static int skippedSounds = 0;
+
 	public static void setRoot(Context context) {root=context;}
 
 	public static <T> double logBase(T x, T b) {
@@ -225,6 +229,25 @@ public class Engine {
 	@Environment(EnvType.CLIENT)
 	public static void playSound(Context context, double posX, double posY, double posZ, int sourceIDIn, boolean auxOnlyIn) {
 		if (Engine.isOff) throw new IllegalStateException("ResoundingEngine must be started first! ");
+
+		totalSoundRequests++;
+
+		if (activeSourceIDs.size() >= pC.maxSoundSources) {
+			skippedSounds++;
+			if (pC.dLog && skippedSounds % 100 == 0) {
+				LOGGER.warn("Sound source limit reached: {}/{} active sources. Skipped {} sounds total.",
+						activeSourceIDs.size(), pC.maxSoundSources, skippedSounds);
+			}
+			return;
+		}
+
+		if (!activeSourceIDs.add(sourceIDIn)) {
+			if (pC.dLog) {
+				LOGGER.debug("Sound source {} is already active, skipping duplicate", sourceIDIn);
+			}
+			return;
+		}
+
 		long startTime = 0;
 		if (pC.pLog) startTime = System.nanoTime();
 		long endTime;
@@ -232,6 +255,7 @@ public class Engine {
 		sourceID = sourceIDIn;
 
 		if (mc.player == null || mc.level == null || uiPattern.matcher(lastSoundName).matches() || ignorePattern.matcher(lastSoundName).matches()) {
+			activeSourceIDs.remove(sourceIDIn);
 			if (pC.dLog) {
 				LOGGER.info("Skipped playing sound \"{}\": Not a world sound.", lastSoundName);
 			}
@@ -279,8 +303,14 @@ public class Engine {
 			if (pC.dLog) {
 				LOGGER.info(message);
 			}
-			try { setEnv(context, processEnv(new EnvData(Collections.emptySet(), Collections.emptySet())), isGentle);
-			} catch (IllegalArgumentException e) { e.printStackTrace(); } return;
+			try {
+				setEnv(context, processEnv(new EnvData(Collections.emptySet(), Collections.emptySet())), isGentle);
+			} catch (IllegalArgumentException e) {
+				e.printStackTrace();
+			} finally {
+				activeSourceIDs.remove(sourceIDIn);
+			}
+			return;
 		}
 
 		if (pC.dLog) {
@@ -289,12 +319,37 @@ public class Engine {
 
 		try {
 			setEnv(context, processEnv(evalEnv()), isGentle);
-		} catch (Exception e) { e.printStackTrace(); }
+		} catch (Exception e) {
+			e.printStackTrace();
+			LOGGER.error("Error processing sound {}: {}", lastSoundName, e.getMessage());
+		} finally {
+			activeSourceIDs.remove(sourceIDIn);
+		}
 
 		if (pC.pLog) {
 			endTime = System.nanoTime();
 			LOGGER.info("Total calculation time for sound {}: {} milliseconds", lastSoundName, (double)(endTime - startTime)/(double)1000000);
 		}
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static void cleanupSource(int sourceID) {
+		activeSourceIDs.remove(sourceID);
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static int getActiveSourceCount() {
+		return activeSourceIDs.size();
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static int getTotalSoundRequests() {
+		return totalSoundRequests;
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static int getSkippedSounds() {
+		return skippedSounds;
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -590,7 +645,32 @@ public class Engine {
 			throw new IllegalArgumentException("Error: Reverb parameter count does not match reverb resolution!");
 		}
 
+		for (int i = 0; i < profile.sendGain().length; i++) {
+			double gain = profile.sendGain()[i];
+			double cutoff = profile.sendCutoff()[i];
+
+			if (gain < 0 || gain > 1.0 || Double.isNaN(gain) || Double.isInfinite(gain)) {
+				gain = Mth.clamp(gain, 0, 1.0);
+			}
+
+			if (cutoff < 0 || cutoff > 1.0 || Double.isNaN(cutoff) || Double.isInfinite(cutoff)) {
+				cutoff = Mth.clamp(cutoff, 0, 1.0);
+			}
+		}
+
 		SlotProfile finalSend = selectSlot(profile.sendGain(), profile.sendCutoff());
+
+		if (finalSend.slot() < 0 || finalSend.slot() >= pC.resolution) {
+			finalSend = new SlotProfile(0, 0, 0);
+		}
+
+		if (finalSend.gain() < 0 || finalSend.gain() > 1.0) {
+			finalSend = new SlotProfile(finalSend.slot(), Mth.clamp(finalSend.gain(), 0, 1.0), finalSend.cutoff());
+		}
+
+		if (finalSend.cutoff() < 0 || finalSend.cutoff() > 1.0) {
+			finalSend = new SlotProfile(finalSend.slot(), finalSend.gain(), Mth.clamp(finalSend.cutoff(), 0, 1.0));
+		}
 
 		if (pC.eLog || pC.dLog) {
 			LOGGER.info("Final reverb settings:\n{}", finalSend);
@@ -620,5 +700,4 @@ public class Engine {
 		}
 		return new SlotProfile(0, 0, 0);
 	}
-
 }

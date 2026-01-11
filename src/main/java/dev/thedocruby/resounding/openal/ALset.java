@@ -1,5 +1,7 @@
 package dev.thedocruby.resounding.openal;
 
+import org.jetbrains.annotations.Nullable;
+
 // class containing AL context information
 public class ALset {
 	public ALset() {
