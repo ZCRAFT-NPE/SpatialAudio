@@ -54,11 +54,11 @@ public class Context extends Utils {
 
 				new Occlusion(),
 				new Doppler(),
-				//new Resonance(),
-				//new Water(),
-				//new Atmosphere(),
+				new Resonance(),
+				new Water(),
+				new Atmosphere(),
 				new Echo(),
-				//new Travel()
+				new Travel()
 		};
 		contexts = new ALset[effects.length];
 	}

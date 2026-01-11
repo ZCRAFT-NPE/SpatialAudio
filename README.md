@@ -7,3 +7,9 @@
 This mod is built to be a client-side Fabric mod. Every part of the mod is fully configurable, and it is all is completely compatible with vanilla gameplay, including custom resource packs. However, support for other mods is not guaranteed.
 
 A full README and Website are coming soon. For now, defer to the following links:
+
+<h2 align="center">Contributors</h2>
+
+<a href="https://github.com/ZCRAFT-NPE/SpatialAudio/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ZCRAFT-NPE/SpatialAudio" />
+</a>
