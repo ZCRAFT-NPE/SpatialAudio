@@ -1,0 +1,21 @@
+{
+  "required": true,
+  "minVersion": "0.8.2",
+  "package": "dev.thedocruby.resounding.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "server.EntityMixin",
+    "server.ServerWorldMixin",
+    "server.PlayerEntityMixin"
+  ],
+  "client": [
+    "RendererMixin",
+    "SoundSystemMixin",
+    "SoundEngineMixin",
+    "SourceMixin",
+    "WorldChunkMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

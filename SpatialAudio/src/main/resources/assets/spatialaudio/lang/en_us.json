@@ -1,0 +1,50 @@
+{
+  "text.autoconfig.spatialaudio.title": "spatialaudio Config",
+
+  "text.autoconfig.spatialaudio.option.enabled": "Enable spatialaudio",
+
+  "text.autoconfig.spatialaudio.option.general": "Generic preferences",
+  "text.autoconfig.spatialaudio.option.quality": "Quality settings",
+  "text.autoconfig.spatialaudio.option.effects": "Extra effects",
+  "text.autoconfig.spatialaudio.option.materials": "Material properties",
+  "text.autoconfig.spatialaudio.option.misc": "Miscellaneous options",
+  "text.autoconfig.spatialaudio.option.debug": "Debug toggles",
+
+  "text.autoconfig.spatialaudio.option.general.globalReverbGain": "Reverb volume",
+  "text.autoconfig.spatialaudio.option.general.globalReverbStrength": "Reverb strength",
+  "text.autoconfig.spatialaudio.option.general.globalReverbSmoothness": "Reverb smoothness",
+  "text.autoconfig.spatialaudio.option.general.globalReverbBrightness": "Reverb brightness",
+  "text.autoconfig.spatialaudio.option.general.globalAbsorptionBrightness": "Absorption brightness",
+
+  "text.autoconfig.spatialaudio.option.quality.reverbResolution": "Reverb resolution",
+  "text.autoconfig.spatialaudio.option.quality.envEvalRays": "Rays per sound",
+  "text.autoconfig.spatialaudio.option.quality.occlusionMode": "Occlusion mode",
+  "text.autoconfig.spatialaudio.option.quality.sharedAirspaceMode": "Shared Airspace mode",
+  "text.autoconfig.spatialaudio.option.quality.envEvalRayBounces": "Extra reflections per ray",
+  "text.autoconfig.spatialaudio.option.quality.soundSimulationDistance": "Sound simulation distance",
+  "text.autoconfig.spatialaudio.option.quality.rayLength": "Ray length",
+  "text.autoconfig.spatialaudio.option.quality.sourceRefreshRate": "Sound refresh interval",
+
+  "text.autoconfig.spatialaudio.option.effects.airAbsorption": "Sound absorption by air",
+  "text.autoconfig.spatialaudio.option.effects.humidityAbsorption": "Sound absorption by humidity",
+  "text.autoconfig.spatialaudio.option.effects.rainAbsorption": "Sound absorption by rain drops",
+  "text.autoconfig.spatialaudio.option.effects.underwaterFilter": "Underwater filter strength",
+
+  "text.autoconfig.spatialaudio.option.materials.materialProperties": "By category",
+  "text.autoconfig.spatialaudio.option.materials.blockWhiteList": "By block (whitelist)",
+
+  "text.autoconfig.spatialaudio.option.MaterialData": "Material Data Entry",
+  "text.autoconfig.spatialaudio.option.MaterialData.example": "Material",
+  "text.autoconfig.spatialaudio.option.MaterialData.reflectivity": "Reflectivity",
+  "text.autoconfig.spatialaudio.option.MaterialData.absorption": "Occlusion density",
+
+  "text.autoconfig.spatialaudio.option.misc.recordsDisable": "Skip Jukebox/Note Block occlusion",
+
+  "text.autoconfig.spatialaudio.option.debug.debugLogging": "General Debug Logging",
+  "text.autoconfig.spatialaudio.option.debug.occlusionLogging": "Occlusion logging",
+  "text.autoconfig.spatialaudio.option.debug.environmentLogging": "Environment logging",
+  "text.autoconfig.spatialaudio.option.debug.performanceLogging": "Performance logging",
+  "text.autoconfig.spatialaudio.option.debug.raytraceParticles": "Raytracing Particles",
+
+  "text.autoconfig.spatialaudio.option.preset": "Config Preset"
+}

@@ -1,0 +1,50 @@
+{
+  "text.autoconfig.spatialaudio.title": "SpatialAudio 配置",
+
+  "text.autoconfig.spatialaudio.option.enabled": "启用 SpatialAudio",
+
+  "text.autoconfig.spatialaudio.option.general": "通用设置",
+  "text.autoconfig.spatialaudio.option.quality": "质量设置",
+  "text.autoconfig.spatialaudio.option.effects": "额外效果",
+  "text.autoconfig.spatialaudio.option.materials": "材质属性",
+  "text.autoconfig.spatialaudio.option.misc": "杂项选项",
+  "text.autoconfig.spatialaudio.option.debug": "调试开关",
+
+  "text.autoconfig.spatialaudio.option.general.globalReverbGain": "混响音量",
+  "text.autoconfig.spatialaudio.option.general.globalReverbStrength": "混响强度",
+  "text.autoconfig.spatialaudio.option.general.globalReverbSmoothness": "混响平滑度",
+  "text.autoconfig.spatialaudio.option.general.globalReverbBrightness": "混响亮度",
+  "text.autoconfig.spatialaudio.option.general.globalAbsorptionBrightness": "吸声亮度",
+
+  "text.autoconfig.spatialaudio.option.quality.reverbResolution": "混响分辨率",
+  "text.autoconfig.spatialaudio.option.quality.envEvalRays": "每声源射线数",
+  "text.autoconfig.spatialaudio.option.quality.occlusionMode": "声学遮蔽模式",
+  "text.autoconfig.spatialaudio.option.quality.sharedAirspaceMode": "共享空气空间模式",
+  "text.autoconfig.spatialaudio.option.quality.envEvalRayBounces": "每条射线额外反射次数",
+  "text.autoconfig.spatialaudio.option.quality.soundSimulationDistance": "声音模拟距离",
+  "text.autoconfig.spatialaudio.option.quality.rayLength": "射线长度",
+  "text.autoconfig.spatialaudio.option.quality.sourceRefreshRate": "声源刷新间隔",
+
+  "text.autoconfig.spatialaudio.option.effects.airAbsorption": "空气吸声",
+  "text.autoconfig.spatialaudio.option.effects.humidityAbsorption": "湿度吸声",
+  "text.autoconfig.spatialaudio.option.effects.rainAbsorption": "雨滴吸声",
+  "text.autoconfig.spatialaudio.option.effects.underwaterFilter": "水下滤波强度",
+
+  "text.autoconfig.spatialaudio.option.materials.materialProperties": "按类别设置",
+  "text.autoconfig.spatialaudio.option.materials.blockWhiteList": "按方块设置（白名单）",
+
+  "text.autoconfig.spatialaudio.option.MaterialData": "材质数据条目",
+  "text.autoconfig.spatialaudio.option.MaterialData.example": "材质示例",
+  "text.autoconfig.spatialaudio.option.MaterialData.reflectivity": "反射率",
+  "text.autoconfig.spatialaudio.option.MaterialData.absorption": "遮蔽密度",
+
+  "text.autoconfig.spatialaudio.option.misc.recordsDisable": "忽略唱片机/音符盒的遮蔽计算",
+
+  "text.autoconfig.spatialaudio.option.debug.debugLogging": "通用调试日志",
+  "text.autoconfig.spatialaudio.option.debug.occlusionLogging": "声学遮蔽日志",
+  "text.autoconfig.spatialaudio.option.debug.environmentLogging": "环境评估日志",
+  "text.autoconfig.spatialaudio.option.debug.performanceLogging": "性能日志",
+  "text.autoconfig.spatialaudio.option.debug.raytraceParticles": "光线追踪粒子效果",
+
+  "text.autoconfig.spatialaudio.option.preset": "配置预设"
+}
