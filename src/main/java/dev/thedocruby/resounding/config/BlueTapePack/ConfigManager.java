@@ -13,7 +13,10 @@ import net.fabricmc.api.Environment;
 import net.minecraft.world.InteractionResult;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 public class ConfigManager {
 

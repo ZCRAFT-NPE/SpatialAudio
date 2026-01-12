@@ -1,29 +1,26 @@
 package dev.thedocruby.resounding;
 
+import dev.thedocruby.resounding.openal.ALUtils;
 import dev.thedocruby.resounding.openal.Context;
 import dev.thedocruby.resounding.raycast.Patch;
 import dev.thedocruby.resounding.raycast.Renderer;
 import dev.thedocruby.resounding.raycast.SPHitResult;
 import dev.thedocruby.resounding.toolbox.*;
-
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-
-import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.sounds.SoundInstance;
-import net.minecraft.world.level.block.SoundType;
-import net.minecraft.sounds.SoundSource;
-import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
-import net.minecraft.util.Mth;
-import net.minecraft.world.phys.Vec3;
 import net.minecraft.core.Vec3i;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.SoundType;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
-
+import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 
@@ -44,7 +41,7 @@ public class Engine {
 	public static EnvType env = null;
 	public static Minecraft mc;
 	public static boolean isOff = true;
-	public static final Logger LOGGER = LogManager.getLogger("Resounding");
+	public static final Logger LOGGER = LogManager.getLogger("SpatialAudio");
 
 	public static final Map<SoundType, SoundType> redirectMap =
 			Map.ofEntries(
@@ -227,7 +224,12 @@ public class Engine {
 
 	@Environment(EnvType.CLIENT)
 	public static void playSound(Context context, double posX, double posY, double posZ, int sourceIDIn, boolean auxOnlyIn) {
-		if (Engine.isOff) throw new IllegalStateException("ResoundingEngine must be started first! ");
+		if (Engine.isOff) return;
+
+		if (!ALUtils.isValidSource(sourceIDIn)) {
+			if (pC.dLog) LOGGER.debug("Invalid source ID {} for sound {}, skipping", sourceIDIn, lastSoundName);
+			return;
+		}
 
 		totalSoundRequests++;
 
@@ -241,9 +243,7 @@ public class Engine {
 		}
 
 		if (!activeSourceIDs.add(sourceIDIn)) {
-			if (pC.dLog) {
-				LOGGER.debug("Sound source {} is already active, skipping duplicate", sourceIDIn);
-			}
+			if (pC.dLog) LOGGER.debug("Sound source {} is already active, skipping duplicate", sourceIDIn);
 			return;
 		}
 
@@ -255,9 +255,7 @@ public class Engine {
 
 		if (mc.player == null || mc.level == null || uiPattern.matcher(lastSoundName).matches() || ignorePattern.matcher(lastSoundName).matches()) {
 			activeSourceIDs.remove(sourceIDIn);
-			if (pC.dLog) {
-				LOGGER.info("Skipped playing sound \"{}\": Not a world sound.", lastSoundName);
-			}
+			if (pC.dLog) LOGGER.info("Skipped playing sound \"{}\": Not a world sound.", lastSoundName);
 			return;
 		}
 
@@ -299,9 +297,7 @@ public class Engine {
 			message = String.format("Skipped environment sampling for sound \"{}\": Disabled sound.", lastSoundName);
 		}
 		if (!message.isEmpty()) {
-			if (pC.dLog) {
-				LOGGER.info(message);
-			}
+			if (pC.dLog) LOGGER.info(message);
 			try {
 				setEnv(context, processEnv(new EnvData(Collections.emptySet(), Collections.emptySet())), isGentle);
 			} catch (IllegalArgumentException e) {
@@ -312,14 +308,11 @@ public class Engine {
 			return;
 		}
 
-		if (pC.dLog) {
-			LOGGER.info(message);
-		}
+		if (pC.dLog) LOGGER.info(message);
 
 		try {
 			setEnv(context, processEnv(evalEnv()), isGentle);
 		} catch (Exception e) {
-			e.printStackTrace();
 			LOGGER.error("Error processing sound {}: {}", lastSoundName, e.getMessage());
 		} finally {
 			activeSourceIDs.remove(sourceIDIn);
@@ -559,9 +552,7 @@ public class Engine {
 		} else {
 			if (pC.dLog || pC.eLog) LOGGER.info("Sampling environment with {} seed rays...", pC.nRays);
 			reflRays = rays.parallelStream().map(Engine::throwReflRay).collect(Collectors.toSet());
-			if (pC.dLog) {
-				LOGGER.info("Environment sampled!");
-			}
+			if (pC.dLog) LOGGER.info("Environment sampled!");
 		}
 
 		Set<OccludedRayData> occlRays = throwOcclRay();
@@ -603,6 +594,12 @@ public class Engine {
 				Engine.LOGGER.info("Room analysis: Type={}, Volume={:.1f}, Absorption={:.3f}",
 						room.roomType, room.volume, room.averageAbsorption);
 			}
+		}
+
+		EchoDetector.EchoAnalysis echoAnalysis = null;
+		double estimatedFrequency = estimateSoundFrequencyInternal();
+		if (mc != null && mc.level != null) {
+			echoAnalysis = EchoDetector.detectEchoes(mc.level, soundPos, listenerPos, estimatedFrequency);
 		}
 
 		for (ReflectedRayData reflRay : data.reflRays()) {
@@ -709,27 +706,34 @@ public class Engine {
 
 		sharedSum /= bounceCount;
 		final double[] sendCutoff = new double[pC.resolution+1];
-		EchoDetector.EchoAnalysis echoAnalysis = null;
-		if (!data.reflRays().isEmpty()) {
-			echoAnalysis = analyzeEchoesFromRayData(data.reflRays());
-		}
 
 		if (echoAnalysis != null && echoAnalysis.hasClearEcho) {
-			for (int i = 0; i < sendGain.length; i++) {
-				if (i < echoAnalysis.echoTimes.size()) {
-					double echoBoost = echoAnalysis.echoAmplitudes.get(i) * 0.5;
-					sendGain[i] = Math.min(1.0, sendGain[i] + echoBoost);
-				}
-			}
+			double echoEnhancementFactor = calculateEchoEnhancementFactor(echoAnalysis);
 
-			double echoCutoffBoost = Math.min(0.3, echoAnalysis.echoDensity * 0.1);
-			for (int i = 0; i < sendCutoff.length; i++) {
-				sendCutoff[i] = Math.min(1.0, sendCutoff[i] + echoCutoffBoost);
+			for (int i = 0; i < sendGain.length; i++) {
+				double echoBoost = 0.0;
+
+				for (int j = 0; j < echoAnalysis.echoTimes.size(); j++) {
+					double echoTime = echoAnalysis.echoTimes.get(j);
+					double echoAmp = echoAnalysis.echoAmplitudes.get(j);
+
+					int echoSlot = (int)(echoTime * 8 * pC.resolution);
+					if (echoSlot >= 0 && echoSlot < sendGain.length && echoSlot == i) {
+						echoBoost += echoAmp * 0.35 * echoAnalysis.echoClarity * echoEnhancementFactor;
+					}
+				}
+
+				sendGain[i] = Math.min(1.0, sendGain[i] * (1.0 + echoBoost));
+
+				double echoCutoffBoost = echoAnalysis.averageReflectivity * 0.12 +
+						echoAnalysis.echoSpaciousness * 0.08;
+				sendCutoff[i] = Math.min(1.0, sendCutoff[i] * (1.0 + echoCutoffBoost));
 			}
 
 			if (pC.dLog) {
-				Engine.LOGGER.info("Echo detection: {} echoes, density={:.2f}",
-						echoAnalysis.echoTimes.size(), echoAnalysis.echoDensity);
+				Engine.LOGGER.info("Enhanced echo detection: {} echoes, clarity={:.2f}, spaciousness={:.2f}, avgRefl={:.2f}",
+						echoAnalysis.echoTimes.size(), echoAnalysis.echoClarity,
+						echoAnalysis.echoSpaciousness, echoAnalysis.averageReflectivity);
 			}
 		}
 
@@ -767,6 +771,12 @@ public class Engine {
 			}
 		}
 
+		if (echoAnalysis != null && echoAnalysis.hasClearEcho) {
+			double echoDirectBoost = echoAnalysis.primaryEchoGain * 0.15 +
+					echoAnalysis.echoClarity * 0.1;
+			directGain = Math.min(1.0, directGain * (1.0 + echoDirectBoost));
+		}
+
 		double directCutoff = Math.pow(directGain, pC.globalAbsHFRcp);
 
 		SoundProfile profile = new SoundProfile(sourceID, directGain, directCutoff, sendGain, sendCutoff);
@@ -779,42 +789,51 @@ public class Engine {
 		return profile;
 	}
 
-	private static EchoDetector.EchoAnalysis analyzeEchoesFromRayData(Set<ReflectedRayData> rayData) {
-		List<Double> echoTimes = new ArrayList<>();
-		List<Double> echoAmplitudes = new ArrayList<>();
+	private static double calculateEchoEnhancementFactor(EchoDetector.EchoAnalysis echoAnalysis) {
+		double factor = 1.0;
 
-		for (ReflectedRayData ray : rayData) {
-			if (ray.size() > 0) {
-				for (int i = 0; i < ray.size(); i++) {
-					double bounceTime = ray.totalBounceDistance()[i] / speedOfSound;
-					double amplitude = ray.totalBounceEnergy()[i];
+		factor += echoAnalysis.echoClarity * 0.4;
+		factor += echoAnalysis.echoSpaciousness * 0.3;
+		factor += echoAnalysis.averageReflectivity * 0.2;
+		factor -= echoAnalysis.averageAbsorption * 0.15;
 
-					if (bounceTime > 0.05 && amplitude > 0.1) {
-						echoTimes.add(bounceTime);
-						echoAmplitudes.add(amplitude);
-					}
-				}
-			}
+		if (echoAnalysis.echoDensity > 1.5) {
+			factor *= 1.1;
 		}
 
-		double echoDensity = 0.0;
-		if (echoTimes.size() > 1) {
-			Collections.sort(echoTimes);
-			double timeRange = echoTimes.get(echoTimes.size() - 1) - echoTimes.get(0);
-			if (timeRange > 0.01) {
-				echoDensity = echoTimes.size() / timeRange;
-			}
-		}
+		return Math.max(0.5, Math.min(2.0, factor));
+	}
 
-		boolean hasClearEcho = false;
-		for (int i = 0; i < echoTimes.size(); i++) {
-			if (echoTimes.get(i) > 0.1 && echoAmplitudes.get(i) > 0.3) {
-				hasClearEcho = true;
-				break;
-			}
-		}
+	private static double estimateSoundFrequencyInternal() {
+		if (lastSoundName == null) return 1000.0;
 
-		return new EchoDetector.EchoAnalysis(echoTimes, echoAmplitudes, echoDensity, hasClearEcho);
+		String soundName = lastSoundName.toLowerCase();
+
+		if (soundName.contains("bell") || soundName.contains("chime") ||
+				soundName.contains("glass") || soundName.contains("crystal")) {
+			return 2000.0;
+		}
+		if (soundName.contains("drum") || soundName.contains("bass") ||
+				soundName.contains("thump") || soundName.contains("boom")) {
+			return 150.0;
+		}
+		if (soundName.contains("click") || soundName.contains("tick") ||
+				soundName.contains("snap") || soundName.contains("pop")) {
+			return 3000.0;
+		}
+		if (soundName.contains("voice") || soundName.contains("speech") ||
+				soundName.contains("talk") || soundName.contains("chat")) {
+			return 500.0;
+		}
+		if (soundName.contains("metal") || soundName.contains("iron") ||
+				soundName.contains("steel") || soundName.contains("chain")) {
+			return 800.0;
+		}
+		if (soundName.contains("wood") || soundName.contains("plank") ||
+				soundName.contains("log") || soundName.contains("door")) {
+			return 400.0;
+		}
+		return 1000.0;
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -854,7 +873,12 @@ public class Engine {
 			LOGGER.info("Final reverb settings:\n{}", finalSend);
 		}
 
-		context.update(finalSend, profile, isGentle);
+		try {
+			context.update(finalSend, profile, isGentle);
+		} catch (Exception e) {
+			LOGGER.error("Failed to set environment for sound {}: {}", lastSoundName, e.getMessage());
+			// Even if it fails, the sound will still be played, just without the reverberation effect
+		}
 	}
 
 

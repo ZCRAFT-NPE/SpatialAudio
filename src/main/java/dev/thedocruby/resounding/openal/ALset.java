@@ -1,20 +1,23 @@
 package dev.thedocruby.resounding.openal;
 
-import org.jetbrains.annotations.Nullable;
-
-// class containing AL context information
 public class ALset {
-	public ALset() {
-		slots   = new int[0];
+	public long old = -1;
+	public long self = 0;
+	public int direct = 0;
+	public int[] slots = new int[0];
+	public int[] effects = new int[0];
+	public int[] filters = new int[0];
+
+	public void clear() {
+		slots = new int[0];
 		effects = new int[0];
 		filters = new int[0];
+		direct = 0;
+		old = -1;
+		self = 0;
 	}
-	// AL objects
-	public static long  old = -1; // context id
-	public static long  self    ; // context id
-	public static int   direct  ; // directFilter
-	public static int[] slots   ;
-	public static int[] effects ;
-	public static int[] filters ;
-}
 
+	public boolean hasObjects() {
+		return slots.length > 0 || effects.length > 0 || filters.length > 0 || direct != 0;
+	}
+}

@@ -6,7 +6,9 @@ import dev.thedocruby.resounding.toolbox.SourceAccessor;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.resources.sounds.SoundInstance;
-import net.minecraft.client.sounds.*;
+import net.minecraft.client.sounds.ChannelAccess;
+import net.minecraft.client.sounds.SoundEngine;
+import net.minecraft.client.sounds.SoundEventListener;
 import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -28,13 +30,15 @@ import static dev.thedocruby.resounding.config.PrecomputedConfig.pC;
 public class SoundSystemMixin {
 
 	@Shadow @Final private com.mojang.blaze3d.audio.Listener listener;
+	@Shadow @Final private Map<SoundInstance, ChannelAccess.ChannelHandle> instanceToChannel;
 
 	@Inject(
 			method = "play",
 			at = @At(
 					value = "FIELD",
 					target = "Lnet/minecraft/client/sounds/SoundEngine;instanceBySource:Lcom/google/common/collect/Multimap;",
-					opcode = Opcodes.GETFIELD)
+					opcode = Opcodes.GETFIELD
+			)
 	)
 	private void soundInfoYeeter(SoundInstance soundInstance, CallbackInfo ci) {
 		if (Engine.isOff) return;
@@ -69,7 +73,31 @@ public class SoundSystemMixin {
 							 ChannelAccess.ChannelHandle channelHandle2, SoundInstance soundInstance) {
 		if (Engine.isOff) return;
 		if (mc.level != null && mc.level.getGameTime() % pC.srcRefrRate == 0) {
-			channelHandle2.execute(source -> ((SourceAccessor) source).calculateReverb(soundInstance, (SoundEventListener) this.listener));
+			channelHandle2.execute(source -> {
+				if (source != null) {
+					((SourceAccessor) source).calculateReverb(soundInstance, (SoundEventListener) this.listener);
+				}
+			});
 		}
+	}
+
+	@Inject(
+			method = "tickNonPaused",
+			at = @At("TAIL")
+	)
+	private void cleanupInvalidSounds(CallbackInfo ci) {
+		if (Engine.isOff) return;
+
+		instanceToChannel.entrySet().removeIf(entry -> {
+			if (entry.getValue() == null) return true;
+
+			try {
+				entry.getValue().execute(source -> {
+				});
+				return false;
+			} catch (Exception e) {
+				return true;
+			}
+		});
 	}
 }

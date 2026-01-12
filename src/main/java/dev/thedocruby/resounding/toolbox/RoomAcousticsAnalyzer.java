@@ -18,23 +18,44 @@ public class RoomAcousticsAnalyzer {
 
     public static class RoomAnalysis {
         public final AABB bounds;
+        public final Vec3 dimensions;
         public final double volume;
         public final double surfaceArea;
+        public final double totalAbsorptionArea;
+        public final double totalReflectionArea;
         public final double averageAbsorption;
+        public final double averageReflectivity;
         public final double avgWallDistance;
         public final boolean isEnclosed;
         public final RoomType roomType;
+        public final double schroederFrequency;
+        public final double meanFreePath;
+        public final double criticalDistance;
+        public final double modalDensity;
+        public final double[] absorptionByFrequency;
 
-        public RoomAnalysis(AABB bounds, double volume, double surfaceArea,
-                            double averageAbsorption, double avgWallDistance,
-                            boolean isEnclosed, RoomType roomType) {
+        public RoomAnalysis(AABB bounds, Vec3 dimensions, double volume, double surfaceArea,
+                            double totalAbsorptionArea, double totalReflectionArea,
+                            double averageAbsorption, double averageReflectivity,
+                            double avgWallDistance, boolean isEnclosed, RoomType roomType,
+                            double schroederFrequency, double meanFreePath, double criticalDistance,
+                            double modalDensity, double[] absorptionByFrequency) {
             this.bounds = bounds;
+            this.dimensions = dimensions;
             this.volume = volume;
             this.surfaceArea = surfaceArea;
+            this.totalAbsorptionArea = totalAbsorptionArea;
+            this.totalReflectionArea = totalReflectionArea;
             this.averageAbsorption = averageAbsorption;
+            this.averageReflectivity = averageReflectivity;
             this.avgWallDistance = avgWallDistance;
             this.isEnclosed = isEnclosed;
             this.roomType = roomType;
+            this.schroederFrequency = schroederFrequency;
+            this.meanFreePath = meanFreePath;
+            this.criticalDistance = criticalDistance;
+            this.modalDensity = modalDensity;
+            this.absorptionByFrequency = absorptionByFrequency;
         }
     }
 
@@ -82,20 +103,39 @@ public class RoomAcousticsAnalyzer {
         );
 
         AABB bounds = findRoomBoundsOptimized(level, centerPos, searchBounds);
+        Vec3 dimensions = new Vec3(
+                bounds.maxX - bounds.minX,
+                bounds.maxY - bounds.minY,
+                bounds.maxZ - bounds.minZ
+        );
         double volume = calculateVolume(bounds);
 
         if (volume > MAX_ROOM_VOLUME) {
             bounds = createBoundedAABB(centerPos, MAX_SEARCH_DISTANCE);
+            dimensions = new Vec3(
+                    bounds.maxX - bounds.minX,
+                    bounds.maxY - bounds.minY,
+                    bounds.maxZ - bounds.minZ
+            );
             volume = calculateVolume(bounds);
         }
 
         RoomAnalysisData data = collectRoomData(level, bounds);
         RoomType roomType = RoomType.fromVolume(volume);
 
+        double schroederFrequency = calculateSchroederFrequency(volume);
+        double meanFreePath = 4.0 * volume / data.surfaceArea;
+        double criticalDistance = calculateCriticalDistance(volume, data.averageAbsorption);
+        double modalDensity = calculateModalDensity(volume, schroederFrequency);
+        double[] absorptionByFrequency = calculateAbsorptionByFrequency(data.materialAbsorptionMap);
+
         RoomAnalysis analysis = new RoomAnalysis(
-                bounds, volume, data.surfaceArea,
-                data.averageAbsorption, data.avgWallDistance,
-                data.isEnclosed, roomType
+                bounds, dimensions, volume, data.surfaceArea,
+                data.totalAbsorptionArea, data.totalReflectionArea,
+                data.averageAbsorption, data.averageReflectivity,
+                data.avgWallDistance, data.isEnclosed, roomType,
+                schroederFrequency, meanFreePath, criticalDistance,
+                modalDensity, absorptionByFrequency
         );
 
         analysisCache.put(cacheKey, analysis);
@@ -199,16 +239,26 @@ public class RoomAcousticsAnalyzer {
 
     private static class RoomAnalysisData {
         final double surfaceArea;
+        final double totalAbsorptionArea;
+        final double totalReflectionArea;
         final double averageAbsorption;
+        final double averageReflectivity;
         final double avgWallDistance;
         final boolean isEnclosed;
+        final Map<String, Double> materialAbsorptionMap;
 
-        RoomAnalysisData(double surfaceArea, double averageAbsorption,
-                         double avgWallDistance, boolean isEnclosed) {
+        RoomAnalysisData(double surfaceArea, double totalAbsorptionArea,
+                         double totalReflectionArea, double averageAbsorption,
+                         double averageReflectivity, double avgWallDistance,
+                         boolean isEnclosed, Map<String, Double> materialAbsorptionMap) {
             this.surfaceArea = surfaceArea;
+            this.totalAbsorptionArea = totalAbsorptionArea;
+            this.totalReflectionArea = totalReflectionArea;
             this.averageAbsorption = averageAbsorption;
+            this.averageReflectivity = averageReflectivity;
             this.avgWallDistance = avgWallDistance;
             this.isEnclosed = isEnclosed;
+            this.materialAbsorptionMap = materialAbsorptionMap;
         }
     }
 
@@ -225,6 +275,8 @@ public class RoomAcousticsAnalyzer {
         int sizeZ = maxZ - minZ + 3;
 
         boolean[][][] solidBlocks = new boolean[sizeX][sizeY][sizeZ];
+        Map<String, Integer> materialCount = new HashMap<>();
+        Map<String, Double> materialAbsorptionMap = new HashMap<>();
 
         for (int x = minX; x <= maxX; x++) {
             for (int y = minY; y <= maxY; y++) {
@@ -232,13 +284,16 @@ public class RoomAcousticsAnalyzer {
                     BlockPos pos = new BlockPos(x, y, z);
                     if (level.isLoaded(pos) && !isPassable(level, pos)) {
                         solidBlocks[x - minX + 1][y - minY + 1][z - minZ + 1] = true;
+                        String materialType = BlockPhysicsUtil.getMaterialType(level.getBlockState(pos));
+                        materialCount.put(materialType, materialCount.getOrDefault(materialType, 0) + 1);
                     }
                 }
             }
         }
 
         double surfaceArea = 0.0;
-        double totalAbsorption = 0.0;
+        double totalAbsorptionArea = 0.0;
+        double totalReflectionArea = 0.0;
         int surfaceCount = 0;
 
         for (int x = minX; x <= maxX; x++) {
@@ -252,32 +307,86 @@ public class RoomAcousticsAnalyzer {
                         if (solidBlocks[bx + 1][by][bz]) {
                             surfaceArea += 1.0;
                             surfaceCount++;
-                            totalAbsorption += getAbsorption(level, new BlockPos(x + 1, y, z));
+                            BlockPos wallPos = new BlockPos(x + 1, y, z);
+                            BlockState state = level.getBlockState(wallPos);
+                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
+                            totalAbsorptionArea += absorption;
+                            totalReflectionArea += reflectivity;
+
+                            String material = BlockPhysicsUtil.getMaterialType(state);
+                            materialAbsorptionMap.put(material,
+                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
                         }
                         if (solidBlocks[bx - 1][by][bz]) {
                             surfaceArea += 1.0;
                             surfaceCount++;
-                            totalAbsorption += getAbsorption(level, new BlockPos(x - 1, y, z));
+                            BlockPos wallPos = new BlockPos(x - 1, y, z);
+                            BlockState state = level.getBlockState(wallPos);
+                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
+                            totalAbsorptionArea += absorption;
+                            totalReflectionArea += reflectivity;
+
+                            String material = BlockPhysicsUtil.getMaterialType(state);
+                            materialAbsorptionMap.put(material,
+                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
                         }
                         if (solidBlocks[bx][by + 1][bz]) {
                             surfaceArea += 1.0;
                             surfaceCount++;
-                            totalAbsorption += getAbsorption(level, new BlockPos(x, y + 1, z));
+                            BlockPos wallPos = new BlockPos(x, y + 1, z);
+                            BlockState state = level.getBlockState(wallPos);
+                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
+                            totalAbsorptionArea += absorption;
+                            totalReflectionArea += reflectivity;
+
+                            String material = BlockPhysicsUtil.getMaterialType(state);
+                            materialAbsorptionMap.put(material,
+                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
                         }
                         if (solidBlocks[bx][by - 1][bz]) {
                             surfaceArea += 1.0;
                             surfaceCount++;
-                            totalAbsorption += getAbsorption(level, new BlockPos(x, y - 1, z));
+                            BlockPos wallPos = new BlockPos(x, y - 1, z);
+                            BlockState state = level.getBlockState(wallPos);
+                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
+                            totalAbsorptionArea += absorption;
+                            totalReflectionArea += reflectivity;
+
+                            String material = BlockPhysicsUtil.getMaterialType(state);
+                            materialAbsorptionMap.put(material,
+                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
                         }
                         if (solidBlocks[bx][by][bz + 1]) {
                             surfaceArea += 1.0;
                             surfaceCount++;
-                            totalAbsorption += getAbsorption(level, new BlockPos(x, y, z + 1));
+                            BlockPos wallPos = new BlockPos(x, y, z + 1);
+                            BlockState state = level.getBlockState(wallPos);
+                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
+                            totalAbsorptionArea += absorption;
+                            totalReflectionArea += reflectivity;
+
+                            String material = BlockPhysicsUtil.getMaterialType(state);
+                            materialAbsorptionMap.put(material,
+                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
                         }
                         if (solidBlocks[bx][by][bz - 1]) {
                             surfaceArea += 1.0;
                             surfaceCount++;
-                            totalAbsorption += getAbsorption(level, new BlockPos(x, y, z - 1));
+                            BlockPos wallPos = new BlockPos(x, y, z - 1);
+                            BlockState state = level.getBlockState(wallPos);
+                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
+                            totalAbsorptionArea += absorption;
+                            totalReflectionArea += reflectivity;
+
+                            String material = BlockPhysicsUtil.getMaterialType(state);
+                            materialAbsorptionMap.put(material,
+                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
                         }
                     }
                 }
@@ -285,16 +394,16 @@ public class RoomAcousticsAnalyzer {
         }
 
         boolean isEnclosed = isEnclosedSimplified(level, bounds, solidBlocks, minX, minY, minZ);
-        double avgAbsorption = surfaceCount > 0 ? totalAbsorption / surfaceCount : 0.1;
+        double averageAbsorption = surfaceCount > 0 ? totalAbsorptionArea / surfaceCount : 0.1;
+        double averageReflectivity = surfaceCount > 0 ? totalReflectionArea / surfaceCount : 0.9;
         double avgWallDistance = calculateAverageWallDistance(bounds);
 
-        return new RoomAnalysisData(surfaceArea, avgAbsorption, avgWallDistance, isEnclosed);
-    }
+        for (String material : materialAbsorptionMap.keySet()) {
+            materialAbsorptionMap.put(material, materialAbsorptionMap.get(material) / surfaceCount);
+        }
 
-    private static double getAbsorption(Level level, BlockPos pos) {
-        if (!level.isLoaded(pos)) return 0.1;
-        BlockState state = level.getBlockState(pos);
-        return BlockPhysicsUtil.getAbsorptionCoefficient(state);
+        return new RoomAnalysisData(surfaceArea, totalAbsorptionArea, totalReflectionArea,
+                averageAbsorption, averageReflectivity, avgWallDistance, isEnclosed, materialAbsorptionMap);
     }
 
     private static boolean isEnclosedSimplified(Level level, AABB bounds,
@@ -332,16 +441,70 @@ public class RoomAcousticsAnalyzer {
         return (width + height + depth) / 6.0;
     }
 
+    private static double calculateSchroederFrequency(double volume) {
+        return 2000.0 * Math.sqrt(0.05 / volume);
+    }
+
+    private static double calculateCriticalDistance(double volume, double averageAbsorption) {
+        double roomConstant = volume * averageAbsorption / (1.0 - averageAbsorption);
+        return 0.057 * Math.sqrt(volume / (Math.PI * roomConstant));
+    }
+
+    private static double calculateModalDensity(double volume, double schroederFrequency) {
+        double speedOfSound = 343.0;
+        return 4.0 * Math.PI * volume * Math.pow(schroederFrequency, 3) / Math.pow(speedOfSound, 3);
+    }
+
+    private static double[] calculateAbsorptionByFrequency(Map<String, Double> materialAbsorptionMap) {
+        double[] absorptionByFrequency = new double[8];
+        double[] frequencies = {125, 250, 500, 1000, 2000, 4000, 8000, 16000};
+
+        for (int i = 0; i < frequencies.length; i++) {
+            double freq = frequencies[i];
+            double totalAbsorption = 0.0;
+            int count = 0;
+
+            for (Map.Entry<String, Double> entry : materialAbsorptionMap.entrySet()) {
+                String material = entry.getKey();
+                double baseAbsorption = entry.getValue();
+
+                double frequencyFactor = switch (material) {
+                    case "glass" -> 1.0 - 0.1 * Math.log10(freq / 1000.0);
+                    case "metal" -> 1.0 - 0.05 * Math.log10(freq / 1000.0);
+                    case "wool" -> 1.0 + 0.2 * Math.log10(freq / 1000.0);
+                    case "wood" -> 1.0 - 0.08 * Math.log10(freq / 1000.0);
+                    case "stone" -> 1.0 - 0.03 * Math.log10(freq / 1000.0);
+                    case "porous" -> 1.0 + 0.3 * Math.log10(freq / 1000.0);
+                    default -> 1.0;
+                };
+
+                totalAbsorption += baseAbsorption * frequencyFactor;
+                count++;
+            }
+
+            absorptionByFrequency[i] = count > 0 ? totalAbsorption / count : 0.1;
+        }
+
+        return absorptionByFrequency;
+    }
+
     public static double calculateReverberationTime(RoomAnalysis room) {
         if (!room.isEnclosed) return 0.1;
 
         double V = room.volume;
-        double A = room.surfaceArea;
+        double S = room.surfaceArea;
         double α = room.averageAbsorption;
 
-        if (A * α == 0) return 0.1;
+        if (S * α == 0) return 0.1;
 
-        double rt60 = 0.161 * V / (A * α);
+        double rt60Sabine = 0.161 * V / (S * α);
+
+        double eyringCorrection = 0.0;
+        if (α < 0.9) {
+            eyringCorrection = -0.161 * V / (S * Math.log(1.0 - α));
+        }
+
+        double rt60 = (rt60Sabine + eyringCorrection) / 2.0;
 
         switch (room.roomType) {
             case TINY:
@@ -364,22 +527,21 @@ public class RoomAcousticsAnalyzer {
                 break;
         }
 
-        return Math.max(0.1, Math.min(10.0, rt60));
+        return Math.max(0.1, Math.min(12.0, rt60));
     }
 
     public static double calculateEarlyReflectionsDelay(RoomAnalysis room) {
-        double distance = room.avgWallDistance;
-        return distance / 343.0;
+        return room.meanFreePath / 343.0;
     }
 
     public static double calculateLateReverbDelay(RoomAnalysis room) {
-        double volumeFactor = Math.sqrt(room.volume) / 50.0;
-        return Math.min(0.1, 0.01 + volumeFactor * 0.02);
+        return room.criticalDistance / 343.0;
     }
 
     public static double calculateDensity(RoomAnalysis room) {
         double baseDensity = 0.5 + 0.5 * Math.exp(-room.volume / 10000.0);
         baseDensity *= (1.0 - room.averageAbsorption * 0.5);
+        baseDensity *= Math.min(1.0, room.modalDensity / 1000.0);
         return Math.max(0.1, Math.min(1.0, baseDensity));
     }
 
@@ -388,6 +550,32 @@ public class RoomAcousticsAnalyzer {
         double irregularity = room.surfaceArea / Math.pow(room.volume, 2.0/3.0);
         baseDiffusion += Math.min(0.3, irregularity * 0.1);
         baseDiffusion += room.averageAbsorption * 0.2;
+
+        double aspectRatio = room.dimensions.x / Math.max(room.dimensions.y, room.dimensions.z);
+        baseDiffusion *= (1.0 - Math.abs(1.0 - aspectRatio) * 0.2);
+
         return Math.max(0.3, Math.min(1.0, baseDiffusion));
+    }
+
+    public static double calculateHighFrequencyGain(RoomAnalysis room) {
+        double baseGain = 0.94 - room.averageAbsorption * 0.6;
+
+        if (room.absorptionByFrequency.length > 3) {
+            double hfAbsorption = room.absorptionByFrequency[3];
+            baseGain -= hfAbsorption * 0.3;
+        }
+
+        return Math.max(0.18, Math.min(1.0, baseGain));
+    }
+
+    public static double calculateDecayHFRatio(RoomAnalysis room) {
+        double baseRatio = 1.08 - room.averageAbsorption * 0.35;
+
+        if (room.absorptionByFrequency.length > 3) {
+            double hfAbsorption = room.absorptionByFrequency[3];
+            baseRatio -= hfAbsorption * 0.2;
+        }
+
+        return Math.max(0.3, Math.min(2.0, baseRatio));
     }
 }
