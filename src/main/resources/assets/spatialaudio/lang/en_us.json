@@ -36,6 +36,9 @@
   "text.autoconfig.spatialaudio.option.effects.humidityAbsorption": "Sound absorption by humidity",
   "text.autoconfig.spatialaudio.option.effects.rainAbsorption": "Sound absorption by rain drops",
   "text.autoconfig.spatialaudio.option.effects.underwaterFilter": "Underwater filter strength",
+  "text.autoconfig.spatialaudio.option.effects.enableEcho": "Enable Independent Echoes",
+  "text.autoconfig.spatialaudio.option.effects.echoThreshold": "Echo Clarity Threshold",
+  "text.autoconfig.spatialaudio.option.effects.maxEchoSlots": "Max Echo Slots",
 
   "text.autoconfig.spatialaudio.option.materials.materialProperties": "By category",
   "text.autoconfig.spatialaudio.option.materials.blockWhiteList": "By block (whitelist)",

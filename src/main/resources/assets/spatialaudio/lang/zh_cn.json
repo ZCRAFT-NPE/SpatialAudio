@@ -30,6 +30,9 @@
   "text.autoconfig.spatialaudio.option.effects.humidityAbsorption": "湿度吸声",
   "text.autoconfig.spatialaudio.option.effects.rainAbsorption": "雨滴吸声",
   "text.autoconfig.spatialaudio.option.effects.underwaterFilter": "水下滤波强度",
+  "text.autoconfig.spatialaudio.option.effects.enableEcho": "启用独立回声",
+  "text.autoconfig.spatialaudio.option.effects.echoThreshold": "回声清晰度阈值",
+  "text.autoconfig.spatialaudio.option.effects.maxEchoSlots": "最大回声槽数",
 
   "text.autoconfig.spatialaudio.option.materials.materialProperties": "按类别设置",
   "text.autoconfig.spatialaudio.option.materials.blockWhiteList": "按方块设置（白名单）",
@@ -45,7 +48,7 @@
   "text.autoconfig.spatialaudio.option.debug.occlusionLogging": "声学遮蔽日志",
   "text.autoconfig.spatialaudio.option.debug.environmentLogging": "环境评估日志",
   "text.autoconfig.spatialaudio.option.debug.performanceLogging": "性能日志",
-  "text.autoconfig.spatialaudio.option.debug.raytraceParticles": "光线追踪粒子效果",
+  "text.autoconfig.spatialaudio.option.debug.raytraceParticles": "路径追踪粒子效果",
 
   "text.autoconfig.spatialaudio.option.preset": "配置预设"
 }

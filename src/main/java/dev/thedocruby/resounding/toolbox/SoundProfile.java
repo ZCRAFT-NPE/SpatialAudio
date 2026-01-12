@@ -17,7 +17,8 @@ public record SoundProfile(
 		double[] sendGain,
 		double[] sendCutoff,
 		@Nullable Vec3 position,
-		@Nullable Vec3 velocity
+		@Nullable Vec3 velocity,
+		@Nullable EchoDetector.EchoAnalysis echoAnalysis
 ) {
 
 	public SoundProfile(
@@ -27,20 +28,39 @@ public record SoundProfile(
 			double[] sendGain,
 			double[] sendCutoff
 	) {
-		this(sourceID, directGain, directCutoff, sendGain, sendCutoff, null, null);
+		this(sourceID, directGain, directCutoff, sendGain, sendCutoff, null, null, null);
+	}
+
+	public SoundProfile(
+			int sourceID,
+			double directGain,
+			double directCutoff,
+			double[] sendGain,
+			double[] sendCutoff,
+			@Nullable Vec3 position,
+			@Nullable Vec3 velocity
+	) {
+		this(sourceID, directGain, directCutoff, sendGain, sendCutoff, position, velocity, null);
 	}
 
 	public SoundProfile withPosition(@Nullable Vec3 position) {
 		return new SoundProfile(
 				sourceID, directGain, directCutoff,
-				sendGain, sendCutoff, position, velocity
+				sendGain, sendCutoff, position, velocity, echoAnalysis
 		);
 	}
 
 	public SoundProfile withVelocity(@Nullable Vec3 velocity) {
 		return new SoundProfile(
 				sourceID, directGain, directCutoff,
-				sendGain, sendCutoff, position, velocity
+				sendGain, sendCutoff, position, velocity, echoAnalysis
+		);
+	}
+
+	public SoundProfile withEchoAnalysis(@Nullable EchoDetector.EchoAnalysis echoAnalysis) {
+		return new SoundProfile(
+				sourceID, directGain, directCutoff,
+				sendGain, sendCutoff, position, velocity, echoAnalysis
 		);
 	}
 
@@ -55,12 +75,13 @@ public record SoundProfile(
 				&& Arrays.equals(sendGain,       profile.sendGain     )
 				&& Arrays.equals(sendCutoff,     profile.sendCutoff   )
 				&& Objects.equals(position,      profile.position     )
-				&& Objects.equals(velocity,      profile.velocity     );
+				&& Objects.equals(velocity,      profile.velocity     )
+				&& Objects.equals(echoAnalysis,  profile.echoAnalysis );
 	}
 
 	@Override
 	public int hashCode() {
-		int hash = Objects.hash(sourceID, directGain, directCutoff, position, velocity);
+		int hash = Objects.hash(sourceID, directGain, directCutoff, position, velocity, echoAnalysis);
 		hash = 31 * hash + Arrays.hashCode(sendGain);
 		hash = 31 * hash + Arrays.hashCode(sendCutoff);
 		return hash;
@@ -76,6 +97,7 @@ public record SoundProfile(
 				";\n        sendCutoff = "   + Arrays.toString(sendCutoff   ) +
 				";\n        position = "     + (position != null ? position : "null") +
 				";\n        velocity = "     + (velocity != null ? velocity : "null") +
+				";\n        echoAnalysis = " + (echoAnalysis != null ? "EchoAnalysis{hasClearEcho=" + echoAnalysis.hasClearEcho + "}" : "null") +
 				";\n    }";
 	}
 }

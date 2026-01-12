@@ -327,6 +327,9 @@ public class Engine {
 	@Environment(EnvType.CLIENT)
 	public static void cleanupSource(int sourceID) {
 		activeSourceIDs.remove(sourceID);
+		if (root != null && root.dopplerEffect != null) {
+			root.dopplerEffect.cleanup();
+		}
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -779,7 +782,7 @@ public class Engine {
 
 		double directCutoff = Math.pow(directGain, pC.globalAbsHFRcp);
 
-		SoundProfile profile = new SoundProfile(sourceID, directGain, directCutoff, sendGain, sendCutoff);
+		SoundProfile profile = new SoundProfile(sourceID, directGain, directCutoff, sendGain, sendCutoff, null, null, echoAnalysis);
 
 		if (pC.eLog || pC.dLog) {
 			Engine.LOGGER.info("Processed sound profile in {} room:\n{}",
@@ -875,6 +878,9 @@ public class Engine {
 
 		try {
 			context.update(finalSend, profile, isGentle);
+			if (context.dopplerActive && context.dopplerEffect != null) {
+				context.dopplerEffect.applyToSource(profile.sourceID(), profile);
+			}
 		} catch (Exception e) {
 			LOGGER.error("Failed to set environment for sound {}: {}", lastSoundName, e.getMessage());
 			// Even if it fails, the sound will still be played, just without the reverberation effect

@@ -146,6 +146,15 @@ public class ResoundingConfig implements ConfigData {
         @Comment("How much sound is filtered when the player is underwater.\n§7[•]§r Range: 0.0 - 1.0\n§7[•]§r 0.0 means no filter. 1.0 means fully filtered.\n§a[+]§r Performance Impact: Low")
         public double underwaterFilter = 0.75;
 
+        @Comment("Enable independent echo effects (requires clear echo detection).\n§7[•]§r When enabled, clear echoes will be heard as distinct repeats.\n§7[•]§r When disabled, echoes are blended into reverb.\n§a[+]§r Performance Impact: Low")
+        public boolean enableEcho = true;
+
+        @Comment("Minimum echo clarity required to trigger independent echo effect.\n§7[•]§r Range: 0.0 - 1.0\n§7[•]§r Higher values require clearer echoes.\n§a[+]§r Performance Impact: Low")
+        public float echoThreshold = 0.3f;
+
+        @Comment("Maximum number of independent echo slots.\n§7[•]§r Range: 1 - 8\n§7[•]§r Limits memory usage for echo effects.\n§a[+]§r Performance Impact: Low")
+        public int maxEchoSlots = 2;
+
             @ConfigEntry.Gui.Excluded // TODO: DirEval
             //@Comment("Whether to try calculating where the sound should come from based on reflections.\n§e[-]§r Performance Impact: Moderate")
             public boolean soundDirectionEvaluation = true;

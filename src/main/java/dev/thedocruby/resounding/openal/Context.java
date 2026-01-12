@@ -2,12 +2,12 @@ package dev.thedocruby.resounding.openal;
 
 import dev.thedocruby.resounding.Engine;
 import dev.thedocruby.resounding.Utils;
+import dev.thedocruby.resounding.effects.Doppler;
+import dev.thedocruby.resounding.effects.Echo;
 import dev.thedocruby.resounding.effects.Effect;
 import dev.thedocruby.resounding.effects.Reverb;
 import dev.thedocruby.resounding.toolbox.SlotProfile;
 import dev.thedocruby.resounding.toolbox.SoundProfile;
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
 import org.apache.commons.lang3.ArrayUtils;
 import org.lwjgl.openal.EXTEfx;
 import org.lwjgl.openal.EXTThreadLocalContext;
@@ -17,7 +17,6 @@ import java.util.Objects;
 
 import static dev.thedocruby.resounding.config.PrecomputedConfig.pC;
 
-@Environment(EnvType.CLIENT)
 public class Context extends Utils {
 	public ALset[] contexts;
 	public boolean active = false;
@@ -29,6 +28,10 @@ public class Context extends Utils {
 	@Nullable public String id = null;
 	public Context[] children;
 	public Effect[] effects;
+	public Echo echoEffect;
+	private boolean echoActive = true;
+	public Doppler dopplerEffect;
+	public boolean dopplerActive = true;
 
 	public void activate() {
 		old = EXTThreadLocalContext.alcGetThreadContext();
@@ -47,7 +50,9 @@ public class Context extends Utils {
 
 	private void populateEffects() {
 		effects = new Effect[] { new Reverb() };
-		contexts = new ALset[effects.length];
+		echoEffect = new Echo();
+		dopplerEffect = new Doppler();
+		contexts = new ALset[effects.length + 2];
 		for (int i = 0; i < contexts.length; i++) {
 			contexts[i] = new ALset();
 		}
@@ -67,6 +72,7 @@ public class Context extends Utils {
 
 		children = new Context[0];
 		effects = new Effect[0];
+		echoEffect = null;
 		garbage = false;
 		id = name;
 
@@ -84,9 +90,19 @@ public class Context extends Utils {
 			effects[i].init();
 		}
 
+		if (pC.enableEcho) {
+			contexts[effects.length] = echoEffect.setup(self);
+			echoEffect.init();
+			echoActive = true;
+		}
+
+		contexts[effects.length + 1] = dopplerEffect.setup(self);
+		dopplerEffect.init();
+		dopplerActive = true;
+
 		deactivate();
 		active = true;
-		Engine.LOGGER.info("Context {} setup complete with {} effects", id, effects.length);
+		Engine.LOGGER.info("Context {} setup complete with {} effects + echo", id, effects.length);
 		return true;
 	}
 
@@ -106,6 +122,7 @@ public class Context extends Utils {
 
 		garbage = force || success;
 		active = false;
+		echoActive = false;
 
 		if (pC.dLog) {
 			if (success) Engine.LOGGER.info("Cleaned context: {}.", id);
@@ -120,21 +137,31 @@ public class Context extends Utils {
 
 		boolean success = true;
 
-		for (int i = 0; i < contexts.length; i++) {
-			ALset context = contexts[i];
-			if (context != null) {
-				success = cleanSlots(context) && success;
-				success = cleanEffects(context) && success;
-				success = cleanFilters(context) && success;
-				success = cleanDirect(context) && success;
-				context.clear();
-			}
-		}
+        for (ALset context : contexts) {
+            if (context != null) {
+                success = cleanSlots(context) && success;
+                success = cleanEffects(context) && success;
+                success = cleanFilters(context) && success;
+                success = cleanDirect(context) && success;
+                success = cleanEcho(context) && success;
+                context.clear();
+            }
+        }
 
 		contexts = null;
 		effects = null;
+		if (echoEffect != null) {
+			echoEffect.cleanup();
+			echoEffect = null;
+		}
+		if (dopplerEffect != null) {
+			dopplerEffect.cleanup();
+			dopplerEffect = null;
+		}
 		return success;
 	}
+
+	public boolean isDopplerActive() { return dopplerActive; }
 
 	private boolean cleanSlots(ALset context) {
 		if (context.slots == null || context.slots.length == 0) return true;
@@ -214,6 +241,35 @@ public class Context extends Utils {
 		return true;
 	}
 
+	private boolean cleanEcho(ALset context) {
+		if (context.echoSlot == 0 && context.echoEffect == 0) return true;
+
+		if (pC.dLog) Engine.LOGGER.info("Removing echo effect");
+
+		if (context.echoSlot != 0 && ALUtils.isValidSlot(context.echoSlot)) {
+			EXTEfx.alAuxiliaryEffectSloti(context.echoSlot, EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
+			EXTEfx.alDeleteAuxiliaryEffectSlots(new int[]{context.echoSlot});
+
+			if (ALUtils.isValidSlot(context.echoSlot)) {
+				Engine.LOGGER.error("Failed to delete echo slot!");
+				return false;
+			}
+		}
+
+		if (context.echoEffect != 0 && ALUtils.isValidEffect(context.echoEffect)) {
+			EXTEfx.alDeleteEffects(new int[]{context.echoEffect});
+
+			if (ALUtils.isValidEffect(context.echoEffect)) {
+				Engine.LOGGER.error("Failed to delete echo effect!");
+				return false;
+			}
+		}
+
+		context.echoSlot = 0;
+		context.echoEffect = 0;
+		return true;
+	}
+
 	public boolean addChild(Context child) {
 		final boolean query = queryChild(child.getID()) == -1;
 		if (query) children = ArrayUtils.add(children, child);
@@ -230,6 +286,7 @@ public class Context extends Utils {
 	public boolean getID(@Nullable String guess) { return Objects.equals(guess, id); }
 	public String getID() { return id; }
 	public boolean isGarbage() { return garbage; }
+	public boolean isEchoActive() { return echoActive; }
 
 	public void update(SlotProfile slot, SoundProfile sound, boolean isGentle) {
 		if (!(active && enabled)) return;
@@ -240,6 +297,17 @@ public class Context extends Utils {
 		for (int i = 0; i < effects.length; i++) {
 			contexts[i] = effects[i].update(slot, sound, isGentle);
 		}
+
+		if (echoActive && echoEffect != null && sound.echoAnalysis() != null) {
+			echoEffect.applyFromAnalysis(sound.echoAnalysis());
+			echoEffect.attachToSource(sound.sourceID(), 0,
+					sound.echoAnalysis().hasClearEcho && sound.echoAnalysis().echoClarity > 0.3);
+		}
+
+		if (dopplerActive && dopplerEffect != null) {
+			dopplerEffect.update(slot, sound, isGentle);
+		}
+
 		deactivate();
 	}
 }

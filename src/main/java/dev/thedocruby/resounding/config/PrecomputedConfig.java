@@ -23,6 +23,15 @@ public class PrecomputedConfig {
     private static final Map<String, MaterialData> MATERIAL_DEFAULTS = createMaterialDefaults();
 
     @Environment(EnvType.CLIENT)
+    public boolean enableEcho = true;
+
+    @Environment(EnvType.CLIENT)
+    public float echoThreshold = 0.3f;
+
+    @Environment(EnvType.CLIENT)
+    public int maxEchoSlots = 2;
+
+    @Environment(EnvType.CLIENT)
     public int maxSoundSources = 64;
 
     @Environment(EnvType.CLIENT)
@@ -179,6 +188,9 @@ public class PrecomputedConfig {
         if(Engine.env == EnvType.CLIENT) {
             long startTime = System.nanoTime();
 
+            enableEcho = c.effects.enableEcho;
+            echoThreshold = c.effects.echoThreshold;
+            maxEchoSlots = c.effects.maxEchoSlots;
             maxSoundSources = c.quality.maxSoundSources;
             globalRvrbGain = Mth.clamp(c.general.globalReverbGain/100d, 0.0d, 1.0d);
             energyFix = 1 / Math.max(c.general.globalReverbStrength, Double.MIN_NORMAL);
