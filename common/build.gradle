@@ -1,0 +1,67 @@
+plugins {
+    id 'multiloader-common'
+    id 'net.neoforged.moddev.legacyforge'
+}
+
+legacyForge {
+    mcpVersion = minecraft_version
+    if (file("src/main/resources/META-INF/accesstransformer.cfg").exists()) {
+        accessTransformers = ["src/main/resources/META-INF/accesstransformer.cfg"]
+    }
+    parchment {
+        minecraftVersion = parchment_minecraft
+        mappingsVersion = parchment_version
+    }
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+    maven { url "https://maven.shedaniel.me/" }
+    maven { url "https://maven.terraformersmc.com/releases" }
+    maven { url "https://maven.maxhenkel.de/repository/public" }
+    maven {
+        url = 'https://api.modrinth.com/maven'
+        content { includeGroup 'maven.modrinth' }
+    }
+}
+
+dependencies {
+    implementation 'org.ow2.asm:asm:9.5'
+    implementation 'org.ow2.asm:asm-tree:9.5'
+    implementation 'org.ow2.asm:asm-commons:9.5'
+    compileOnly "me.shedaniel.cloth:cloth-config-forge:${cloth_config_version}"
+
+    compileOnly group: 'org.spongepowered', name: 'mixin', version: '0.8.5'
+    implementation group: 'com.google.code.findbugs', name: 'jsr305', version: '3.0.1'
+
+    compileOnly group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.3.5'
+    annotationProcessor group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.3.5'
+}
+
+configurations {
+    commonJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonResources {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+}
+
+tasks.javadoc {
+    exclude '**/mixin/**'
+}
+
+artifacts {
+    commonJava sourceSets.main.java.sourceDirectories.singleFile
+    commonResources sourceSets.main.resources.sourceDirectories.singleFile
+}
+
+java {
+    withSourcesJar()
+}
+jar {
+    from "LICENSE"
+}

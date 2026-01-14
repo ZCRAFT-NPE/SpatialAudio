@@ -1,0 +1,23 @@
+{
+  "required": true,
+  "minVersion": "0.8.2",
+  "package": "me.zcraft.mods.spatialaudio.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "spatialaudio.refmap.json",
+  "priority": 1,
+  "mixins": [
+    "server.EntityMixin",
+    "server.ServerWorldMixin",
+    "server.PlayerEntityMixin"
+  ],
+  "client": [
+    "RendererMixin",
+    "SoundSystemMixin",
+    "SoundEngineMixin",
+    "SourceMixin",
+    "WorldChunkMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

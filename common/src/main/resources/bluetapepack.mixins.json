@@ -1,0 +1,14 @@
+{
+  "required": false,
+  "minVersion": "0.8.2",
+  "package": "me.zcraft.mods.spatialaudio.config.BlueTapePack.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [  ],
+  "client": [
+    "GuiRegistriesAccessorMixin",
+    "NestedListSaveContentMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
