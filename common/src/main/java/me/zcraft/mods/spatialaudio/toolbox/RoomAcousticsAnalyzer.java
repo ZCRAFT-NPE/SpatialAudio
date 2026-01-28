@@ -181,6 +181,9 @@ public class RoomAcousticsAnalyzer {
             key = (key + (key << 2)) + (key << 4);
             key = key ^ (key >>> 28);
             key = key + (key << 31);
+
+            key = (key ^ 0x9E3779B9L) * 0x9E3779B9L;
+
             return Math.abs((int) (key % size));
         }
     }
