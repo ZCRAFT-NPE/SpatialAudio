@@ -1,10 +1,7 @@
 package me.zcraft.mods.spatialaudio.raycast;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.*;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -45,26 +42,27 @@ public class Renderer {
 		RenderSystem.enableDepthTest();
 		RenderSystem.depthMask(false);
 		RenderSystem.disableCull();
+
 		RenderSystem.setShader(GameRenderer::getRendertypeLinesShader);
 		RenderSystem.lineWidth(2.0f);
 		RenderSystem.enableBlend();
-		RenderSystem.blendFunc(770, 771);
+		RenderSystem.defaultBlendFunc();
 
 		Tesselator tesselator = Tesselator.getInstance();
-		BufferBuilder buffer = tesselator.getBuilder();
-		buffer.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR);
+
+		BufferBuilder buffer = tesselator.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR);
 
 		int renderedCount = 0;
 		synchronized (lock) {
 			for (RaySegment ray : raySegments) {
 				if (renderedCount >= MAX_RAYS) break;
 
-				double startX = ray.start.x - cameraX;
-				double startY = ray.start.y - cameraY;
-				double startZ = ray.start.z - cameraZ;
-				double endX = ray.end.x - cameraX;
-				double endY = ray.end.y - cameraY;
-				double endZ = ray.end.z - cameraZ;
+				float startX = (float)(ray.start.x - cameraX);
+				float startY = (float)(ray.start.y - cameraY);
+				float startZ = (float)(ray.start.z - cameraZ);
+				float endX = (float)(ray.end.x - cameraX);
+				float endY = (float)(ray.end.y - cameraY);
+				float endZ = (float)(ray.end.z - cameraZ);
 
 				float ageRatio = ray.lifetime / ray.maxLifetime;
 				int alpha = (int)(ageRatio * 200 + 55);
@@ -73,13 +71,17 @@ public class Renderer {
 				int g = (int)(220 + 35 * ageRatio);
 				int b = (int)(255 * ageRatio);
 
-				buffer.vertex(startX, startY, startZ).color(r, g, b, alpha).endVertex();
-				buffer.vertex(endX, endY, endZ).color(r, g, b, alpha).endVertex();
+				// 添加两个顶点来构成一条线
+				buffer.addVertex(startX, startY, startZ)
+						.setColor(r, g, b, alpha);
+				buffer.addVertex(endX, endY, endZ)
+						.setColor(r, g, b, alpha);
+
 				renderedCount++;
 			}
 		}
 
-		tesselator.end();
+		BufferUploader.drawWithShader(buffer.buildOrThrow());
 
 		RenderSystem.lineWidth(1.0f);
 		RenderSystem.enableCull();

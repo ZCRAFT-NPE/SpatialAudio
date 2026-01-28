@@ -16,6 +16,7 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.*;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.blending.BlendingData;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import org.apache.commons.lang3.ArrayUtils;
@@ -159,11 +160,6 @@ public abstract class WorldChunkMixin extends ChunkAccess implements WorldChunkA
 				}
 			}
 		}
-	}
-
-	@Shadow
-	public @Nullable ChunkStatus getStatus() {
-		return null;
 	}
 
 	@Inject(method = "setBlockState", at = @At("HEAD"))

@@ -10,7 +10,7 @@ base {
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(java_version)
     withSourcesJar()
-    //withJavadocJar()
+    withJavadocJar()
 }
 
 repositories {
@@ -26,16 +26,14 @@ repositories {
         filter { includeGroupAndSubgroups('org.spongepowered') }
     }
     exclusiveContent {
-        forRepositories(
-                maven {
-                    name = 'ParchmentMC'
-                    url = 'https://maven.parchmentmc.org/'
-                },
+        forRepositories(maven {
+            name = 'ParchmentMC'
+            url = 'https://maven.parchmentmc.org/'
+        },
                 maven {
                     name = "NeoForge"
                     url = 'https://maven.neoforged.net/releases'
-                }
-        )
+                })
         filter { includeGroup('org.parchmentmc.data') }
     }
     maven {
@@ -52,35 +50,12 @@ repositories {
         name = 'TerraformersMC'
         url = 'https://maven.terraformersmc.com/releases/'
     }
-
-    // Sonatype/CodeMC snapshots for occlusionculling snapshot artifacts
-    exclusiveContent {
-        forRepositories(
-                maven {
-                    name = 'SonatypeSnapshots'
-                    url = 'https://s01.oss.sonatype.org/content/repositories/snapshots/'
-                },
-                maven {
-                    name = 'SonatypeOSS'
-                    url = 'https://oss.sonatype.org/content/repositories/snapshots/'
-                },
-                maven {
-                    name = 'CodeMC'
-                    url = 'https://repo.codemc.io/repository/maven-public/'
-                }
-        )
-        filter { includeGroup('com.logisticscraft') }
-    }
-
-    // JitPack (fallback for GitHub-hosted artifacts)
-    maven { url = 'https://jitpack.io' }
 }
 
 // Declare capabilities on the outgoing configurations.
 // Read more about capabilities here: https://docs.gradle.org/current/userguide/component_capabilities.html#sec:declaring-additional-capabilities-for-a-local-component
-['apiElements', 'runtimeElements', 'sourcesElements'].each { variant ->
+['apiElements', 'runtimeElements', 'sourcesElements', 'javadocElements'].each { variant ->
     configurations."$variant".outgoing {
-        capability("$group:${project.name}:$version")
         capability("$group:${base.archivesName.get()}:$version")
         capability("$group:$mod_id-${project.name}-${minecraft_version}:$version")
         capability("$group:$mod_id:$version")
@@ -102,51 +77,39 @@ jar {
     }
 
     manifest {
-        attributes([
-                'Specification-Title'   : mod_name,
-                'Specification-Vendor'  : mod_author,
-                'Specification-Version' : project.jar.archiveVersion,
-                'Implementation-Title'  : project.name,
-                'Implementation-Version': project.jar.archiveVersion,
-                'Implementation-Vendor' : mod_author,
-                'Built-On-Minecraft'    : minecraft_version
-        ])
+        attributes(['Specification-Title'   : mod_name,
+                    'Specification-Vendor'  : mod_author,
+                    'Specification-Version' : project.jar.archiveVersion,
+                    'Implementation-Title'  : project.name,
+                    'Implementation-Version': project.jar.archiveVersion,
+                    'Implementation-Vendor' : mod_author,
+                    'Built-On-Minecraft'    : minecraft_version])
     }
 }
 
 processResources {
-    var expandProps = [
-            'version'                      : version,
-            'group'                        : project.group, //Else we target the task's group.
-            'minecraft_version'            : minecraft_version,
-            'minecraft_version_range'      : minecraft_version_range,
-            'fabric_version'               : fabric_version,
-            'fabric_loader_version'        : fabric_loader_version,
-            'mod_name'                     : mod_name,
-            'mod_author'                   : mod_author,
-            'mod_id'                       : mod_id,
-            'license'                      : license,
-            'description'                  : project.description,
-            "forge_version": forge_version,
-            "forge_loader_version_range": forge_loader_version_range,
-            'credits'                      : credits,
-            'java_version'                 : java_version
-    ]
+    var expandProps = ['version'                      : version,
+                       'group'                        : project.group, //Else we target the task's group.
+                       'minecraft_version'            : minecraft_version,
+                       'minecraft_version_range'      : minecraft_version_range,
+                       'fabric_version'               : fabric_version,
+                       'fabric_loader_version'        : fabric_loader_version,
+                       'mod_name'                     : mod_name,
+                       'mod_author'                   : mod_author,
+                       'mod_id'                       : mod_id,
+                       'license'                      : license,
+                       'description'                  : project.description,
+                       'neoforge_version'             : neoforge_version,
+                       'neoforge_loader_version_range': neoforge_loader_version_range,
+                       "forge_version"                : forge_version,
+                       "forge_loader_version_range"   : forge_loader_version_range,
+                       'credits'                      : credits,
+                       'java_version'                 : java_version]
 
-    var jsonExpandProps = expandProps.collectEntries {
-        key, value -> [(key): value instanceof String ? value.replace("\n", "\\\\n") : value]
-    }
-
-    filesMatching(['META-INF/mods.toml']) {
+    filesMatching(['pack.mcmeta', 'fabric.mod.json', 'META-INF/mods.toml', 'META-INF/neoforge.mods.toml', '*.mixins.json']) {
         expand expandProps
     }
-
-    filesMatching(['pack.mcmeta', 'fabric.mod.json', '*.mixins.json']) {
-        expand jsonExpandProps
-    }
-
     inputs.properties(expandProps)
-    duplicatesStrategy = DuplicatesStrategy.WARN
 }
 
 publishing {
