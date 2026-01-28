@@ -1,20 +1,50 @@
 package me.zcraft.mods.spatialaudio.toolbox;
 
+import com.google.common.util.concurrent.AtomicDouble;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class RoomAcousticsAnalyzer {
-    private static final int MAX_ROOM_VOLUME = 100_000;
-    private static final int MAX_SEARCH_DISTANCE = 64;
-    private static final int MAX_ITERATIONS = 10_000;
-    private static final Map<Long, RoomAnalysis> analysisCache = new WeakHashMap<>();
-    private static final int CACHE_DURATION_TICKS = 20;
+    private static final int MAX_SEARCH_VOLUME = 131072;
+    private static final int MAX_ITERATIONS = 3000;
+    private static final int TARGET_FRAME_TIME_MS = 8;
+    private static final double MIN_ANALYSIS_QUALITY = 0.4;
+
+    private static final Map<Long, CacheEntry> spatialCache = new ConcurrentHashMap<>(512, 0.75f, 4);
+    private static final Map<Long, PredictiveEntry> predictiveCache = new ConcurrentHashMap<>(256);
+    private static BloomFilter bloomFilter = new BloomFilter(8192);
+    private static final ReentrantReadWriteLock cacheLock = new ReentrantReadWriteLock();
+
+    private static final ForkJoinPool computePool = new ForkJoinPool(
+            Runtime.getRuntime().availableProcessors(),
+            ForkJoinPool.defaultForkJoinWorkerThreadFactory,
+            null,
+            true
+    );
+
+    private static final ExecutorService ioBoundExecutor = Executors.newFixedThreadPool(2);
+    private static final ScheduledExecutorService maintenanceExecutor = Executors.newScheduledThreadPool(1);
+
+    private static final AtomicInteger activeAnalyses = new AtomicInteger(0);
+    private static final AtomicLong totalProcessingTime = new AtomicLong(0);
+    private static final AtomicDouble performanceScaleFactor = new AtomicDouble(1.0);
+
+    static {
+        maintenanceExecutor.scheduleAtFixedRate(() -> {
+            performCacheMaintenance();
+            adjustPerformanceScaling();
+        }, 5, 5, TimeUnit.SECONDS);
+    }
 
     public static class RoomAnalysis {
         public final AABB bounds;
@@ -33,13 +63,17 @@ public class RoomAcousticsAnalyzer {
         public final double criticalDistance;
         public final double modalDensity;
         public final double[] absorptionByFrequency;
+        public final double analysisQuality;
+        public final long computationTimeMs;
+        public final boolean fromPrediction;
 
         public RoomAnalysis(AABB bounds, Vec3 dimensions, double volume, double surfaceArea,
                             double totalAbsorptionArea, double totalReflectionArea,
                             double averageAbsorption, double averageReflectivity,
                             double avgWallDistance, boolean isEnclosed, RoomType roomType,
                             double schroederFrequency, double meanFreePath, double criticalDistance,
-                            double modalDensity, double[] absorptionByFrequency) {
+                            double modalDensity, double[] absorptionByFrequency,
+                            double analysisQuality, long computationTimeMs, boolean fromPrediction) {
             this.bounds = bounds;
             this.dimensions = dimensions;
             this.volume = volume;
@@ -56,23 +90,28 @@ public class RoomAcousticsAnalyzer {
             this.criticalDistance = criticalDistance;
             this.modalDensity = modalDensity;
             this.absorptionByFrequency = absorptionByFrequency;
+            this.analysisQuality = analysisQuality;
+            this.computationTimeMs = computationTimeMs;
+            this.fromPrediction = fromPrediction;
         }
     }
 
     public enum RoomType {
-        TINY(0, 100),
-        SMALL(100, 1000),
-        MEDIUM(1000, 8000),
-        LARGE(8000, 27000),
-        HUGE(27000, 64000),
-        CATHEDRAL(64000, Double.MAX_VALUE);
+        TINY(0, 100, 16),
+        SMALL(100, 1000, 24),
+        MEDIUM(1000, 8000, 32),
+        LARGE(8000, 27000, 48),
+        HUGE(27000, 64000, 64),
+        CATHEDRAL(64000, Double.MAX_VALUE, 96);
 
         public final double minVolume;
         public final double maxVolume;
+        public final int searchRadius;
 
-        RoomType(double minVolume, double maxVolume) {
+        RoomType(double minVolume, double maxVolume, int searchRadius) {
             this.minVolume = minVolume;
             this.maxVolume = maxVolume;
+            this.searchRadius = searchRadius;
         }
 
         public static RoomType fromVolume(double volume) {
@@ -85,106 +124,324 @@ public class RoomAcousticsAnalyzer {
         }
     }
 
-    public static RoomAnalysis analyzeRoom(Level level, Vec3 center) {
-        BlockPos centerPos = BlockPos.containing(center);
-        long cacheKey = getCacheKey(level, centerPos);
-        RoomAnalysis cached = analysisCache.get(cacheKey);
-        if (cached != null) {
-            return cached;
+    private static class CacheEntry {
+        final RoomAnalysis analysis;
+        final long timestamp;
+        final long accessCount;
+        final int hitScore;
+
+        CacheEntry(RoomAnalysis analysis, long timestamp, long accessCount, int hitScore) {
+            this.analysis = analysis;
+            this.timestamp = timestamp;
+            this.accessCount = accessCount;
+            this.hitScore = hitScore;
+        }
+    }
+
+    private static class PredictiveEntry {
+        final double predictedAbsorption;
+        final double predictedReflectivity;
+        final RoomType predictedType;
+        final long lastUpdated;
+        final int confidence;
+
+        PredictiveEntry(double absorption, double reflectivity, RoomType type, long timestamp, int confidence) {
+            this.predictedAbsorption = absorption;
+            this.predictedReflectivity = reflectivity;
+            this.predictedType = type;
+            this.lastUpdated = timestamp;
+            this.confidence = confidence;
+        }
+    }
+
+    private static class BloomFilter {
+        private final long[] bits;
+        private final int size;
+
+        BloomFilter(int size) {
+            this.size = size;
+            this.bits = new long[(size + 63) / 64];
         }
 
-        AABB searchBounds = new AABB(
-                centerPos.getX() - MAX_SEARCH_DISTANCE,
-                centerPos.getY() - MAX_SEARCH_DISTANCE,
-                centerPos.getZ() - MAX_SEARCH_DISTANCE,
-                centerPos.getX() + MAX_SEARCH_DISTANCE,
-                centerPos.getY() + MAX_SEARCH_DISTANCE,
-                centerPos.getZ() + MAX_SEARCH_DISTANCE
-        );
+        void add(long key) {
+            int hash = hash(key);
+            bits[hash >>> 6] |= 1L << (hash & 63);
+        }
 
-        AABB bounds = findRoomBoundsOptimized(level, centerPos, searchBounds);
-        Vec3 dimensions = new Vec3(
-                bounds.maxX - bounds.minX,
-                bounds.maxY - bounds.minY,
-                bounds.maxZ - bounds.minZ
-        );
-        double volume = calculateVolume(bounds);
+        boolean mightContain(long key) {
+            int hash = hash(key);
+            return (bits[hash >>> 6] & (1L << (hash & 63))) != 0;
+        }
 
-        if (volume > MAX_ROOM_VOLUME) {
-            bounds = createBoundedAABB(centerPos, MAX_SEARCH_DISTANCE);
-            dimensions = new Vec3(
+        private int hash(long key) {
+            key = (~key) + (key << 21);
+            key = key ^ (key >>> 24);
+            key = (key + (key << 3)) + (key << 8);
+            key = key ^ (key >>> 14);
+            key = (key + (key << 2)) + (key << 4);
+            key = key ^ (key >>> 28);
+            key = key + (key << 31);
+            return Math.abs((int) (key % size));
+        }
+    }
+
+    public static RoomAnalysis analyzeRoom(Level level, Vec3 center) {
+        long startTime = System.nanoTime();
+        activeAnalyses.incrementAndGet();
+
+        try {
+            if (activeAnalyses.get() > 8) {
+                return performQuickAnalysis(level, center);
+            }
+
+            BlockPos centerPos = BlockPos.containing(center);
+            long spatialKey = computeSpatialKey(centerPos);
+            long chunkKey = computeChunkKey(centerPos);
+
+            cacheLock.readLock().lock();
+            try {
+                if (bloomFilter.mightContain(spatialKey)) {
+                    CacheEntry cached = spatialCache.get(spatialKey);
+                    if (cached != null && System.currentTimeMillis() - cached.timestamp < 10000) {
+                        if (cached.hitScore > 2) {
+                            return cached.analysis;
+                        }
+                    }
+                }
+
+                PredictiveEntry prediction = predictiveCache.get(chunkKey);
+                if (prediction != null && prediction.confidence > 70) {
+                    if (System.currentTimeMillis() - prediction.lastUpdated < 30000) {
+                        return createPredictedAnalysis(center, prediction);
+                    }
+                }
+            } finally {
+                cacheLock.readLock().unlock();
+            }
+
+            CompletableFuture<RoomAnalysis> future = analyzeRoomAsyncInternal(level, center);
+            RoomAnalysis result = future.get(100, TimeUnit.MILLISECONDS);
+
+            cacheLock.writeLock().lock();
+            try {
+                bloomFilter.add(spatialKey);
+                spatialCache.put(spatialKey, new CacheEntry(result, System.currentTimeMillis(), 1, 1));
+
+                PredictiveEntry existing = predictiveCache.get(chunkKey);
+                if (existing == null || existing.confidence < 85) {
+                    predictiveCache.put(chunkKey, new PredictiveEntry(
+                            result.averageAbsorption,
+                            result.averageReflectivity,
+                            result.roomType,
+                            System.currentTimeMillis(),
+                            Math.min(100, existing != null ? existing.confidence + 15 : 75)
+                    ));
+                }
+            } finally {
+                cacheLock.writeLock().unlock();
+            }
+
+            return result;
+        } catch (Exception e) {
+            return performFallbackAnalysis(level, center);
+        } finally {
+            long endTime = System.nanoTime();
+            totalProcessingTime.addAndGet((endTime - startTime) / 1_000_000);
+            activeAnalyses.decrementAndGet();
+        }
+    }
+
+    private static CompletableFuture<RoomAnalysis> analyzeRoomAsyncInternal(Level level, Vec3 center) {
+        return CompletableFuture.supplyAsync(() -> {
+            BlockPos centerPos = BlockPos.containing(center);
+
+            AdaptiveSampler sampler = new AdaptiveSampler(level, centerPos);
+            sampler.performInitialSampling();
+
+            if (sampler.shouldUseQuickMode()) {
+                return performOptimizedAnalysis(level, centerPos);
+            }
+
+            RoomBoundsFinder boundsFinder = new RoomBoundsFinder(level, centerPos);
+            AABB bounds = boundsFinder.findBounds();
+
+            if (bounds == null || bounds.getSize() > 1_000_000) {
+                return performOptimizedAnalysis(level, centerPos);
+            }
+
+            RoomDataCollector collector = new RoomDataCollector(level, bounds, sampler);
+            RoomDataCollector.RoomData data = collector.collectData();
+
+            double volume = calculateVolume(bounds);
+            RoomType roomType = RoomType.fromVolume(volume);
+            double quality = calculateDynamicQuality(bounds, volume, sampler.getSampleCount());
+
+            if (quality < MIN_ANALYSIS_QUALITY) {
+                return createLowQualityAnalysis(level, center, bounds, volume, roomType, quality);
+            }
+
+            double schroederFrequency = calculateSchroederFrequency(volume);
+            double meanFreePath = 4.0 * volume / data.surfaceArea;
+            double criticalDistance = calculateCriticalDistance(volume, data.averageAbsorption);
+            double modalDensity = calculateModalDensity(volume, schroederFrequency);
+            double[] absorptionByFrequency = calculateAbsorptionByFrequency(data.materialAbsorptionMap);
+
+            Vec3 dimensions = new Vec3(
                     bounds.maxX - bounds.minX,
                     bounds.maxY - bounds.minY,
                     bounds.maxZ - bounds.minZ
             );
-            volume = calculateVolume(bounds);
+
+            return new RoomAnalysis(
+                    bounds, dimensions, volume, data.surfaceArea,
+                    data.totalAbsorptionArea, data.totalReflectionArea,
+                    data.averageAbsorption, data.averageReflectivity,
+                    data.avgWallDistance, data.isEnclosed, roomType,
+                    schroederFrequency, meanFreePath, criticalDistance,
+                    modalDensity, absorptionByFrequency, quality,
+                    System.currentTimeMillis(), false
+            );
+        }, computePool);
+    }
+
+    private static class AdaptiveSampler {
+        private final Level level;
+        private final BlockPos center;
+        private int sampleCount;
+
+        private static final int SAMPLES_PER_AXIS = 8;
+
+        AdaptiveSampler(Level level, BlockPos center) {
+            this.level = level;
+            this.center = center;
         }
 
-        RoomAnalysisData data = collectRoomData(level, bounds);
-        RoomType roomType = RoomType.fromVolume(volume);
+        void performInitialSampling() {
+            int radius = 16;
+            int solidCount = 0;
+            int totalSamples = 0;
 
-        double schroederFrequency = calculateSchroederFrequency(volume);
-        double meanFreePath = 4.0 * volume / data.surfaceArea;
-        double criticalDistance = calculateCriticalDistance(volume, data.averageAbsorption);
-        double modalDensity = calculateModalDensity(volume, schroederFrequency);
-        double[] absorptionByFrequency = calculateAbsorptionByFrequency(data.materialAbsorptionMap);
+            for (int dx = -radius; dx <= radius; dx += 4) {
+                for (int dz = -radius; dz <= radius; dz += 4) {
+                    for (int dy = -8; dy <= 8; dy += 4) {
+                        BlockPos pos = center.offset(dx, dy, dz);
+                        if (level.isLoaded(pos)) {
+                            BlockState state = level.getBlockState(pos);
+                            if (!state.isAir() && state.blocksMotion()) {
+                                solidCount++;
+                            }
+                            totalSamples++;
+                        }
+                    }
+                }
+            }
 
-        RoomAnalysis analysis = new RoomAnalysis(
-                bounds, dimensions, volume, data.surfaceArea,
-                data.totalAbsorptionArea, data.totalReflectionArea,
-                data.averageAbsorption, data.averageReflectivity,
-                data.avgWallDistance, data.isEnclosed, roomType,
-                schroederFrequency, meanFreePath, criticalDistance,
-                modalDensity, absorptionByFrequency
-        );
+            boolean highDensity = totalSamples > 0 && (solidCount * 100 / totalSamples) > 60;
+            sampleCount = highDensity ? SAMPLES_PER_AXIS * 2 : SAMPLES_PER_AXIS;
+        }
 
-        analysisCache.put(cacheKey, analysis);
-        return analysis;
+        boolean shouldUseQuickMode() {
+            return activeAnalyses.get() > 4 || performanceScaleFactor.get() < 0.6;
+        }
+
+        int getSampleCount() {
+            return sampleCount;
+        }
+
+        int getSampleInterval(double volume) {
+            if (volume > 50000) return 4;
+            if (volume > 10000) return 3;
+            if (volume > 1000) return 2;
+            return 1;
+        }
     }
 
-    private static long getCacheKey(Level level, BlockPos pos) {
-        long tick = level.getGameTime() / CACHE_DURATION_TICKS;
-        return ((long) pos.getX() << 40) |
-                ((long) pos.getY() << 20) |
-                pos.getZ() |
-                (tick << 60);
-    }
+    private static class RoomBoundsFinder {
+        private final Level level;
+        private final BlockPos start;
+        private final boolean[][][] visited;
+        private final Queue<BlockPos> queue;
+        private final int offsetX, offsetY, offsetZ;
+        private final int sizeX, sizeY, sizeZ;
 
-    private static AABB findRoomBoundsOptimized(Level level, BlockPos start, AABB searchBounds) {
-        int sizeX = (int)(searchBounds.maxX - searchBounds.minX) + 1;
-        int sizeY = (int)(searchBounds.maxY - searchBounds.minY) + 1;
-        int sizeZ = (int)(searchBounds.maxZ - searchBounds.minZ) + 1;
+        private int minX, minY, minZ;
+        private int maxX, maxY, maxZ;
+        private int iterations;
 
-        boolean[][][] visited = new boolean[sizeX][sizeY][sizeZ];
-        int offsetX = (int) searchBounds.minX;
-        int offsetY = (int) searchBounds.minY;
-        int offsetZ = (int) searchBounds.minZ;
+        RoomBoundsFinder(Level level, BlockPos start) {
+            this.level = level;
+            this.start = start;
 
-        Queue<BlockPos> queue = new ArrayDeque<>();
-        queue.add(start);
+            int searchRadius = RoomType.CATHEDRAL.searchRadius;
+            this.sizeX = searchRadius * 2 + 1;
+            this.sizeY = Math.min(64, searchRadius * 2 + 1);
+            this.sizeZ = searchRadius * 2 + 1;
 
-        int startRelX = start.getX() - offsetX;
-        int startRelY = start.getY() - offsetY;
-        int startRelZ = start.getZ() - offsetZ;
-        visited[startRelX][startRelY][startRelZ] = true;
+            this.offsetX = start.getX() - searchRadius;
+            this.offsetY = start.getY() - sizeY / 2;
+            this.offsetZ = start.getZ() - searchRadius;
 
-        int minX = start.getX();
-        int minY = start.getY();
-        int minZ = start.getZ();
-        int maxX = start.getX();
-        int maxY = start.getY();
-        int maxZ = start.getZ();
+            this.visited = new boolean[sizeX][sizeY][sizeZ];
+            this.queue = new ArrayDeque<>(1024);
 
-        int iterations = 0;
-        final int[] dxArray = {-1, 1, 0, 0, 0, 0};
-        final int[] dyArray = {0, 0, -1, 1, 0, 0};
-        final int[] dzArray = {0, 0, 0, 0, -1, 1};
+            this.minX = start.getX();
+            this.minY = start.getY();
+            this.minZ = start.getZ();
+            this.maxX = start.getX();
+            this.maxY = start.getY();
+            this.maxZ = start.getZ();
+        }
 
-        while (!queue.isEmpty() && iterations++ < MAX_ITERATIONS) {
-            BlockPos current = queue.poll();
-            int x = current.getX();
-            int y = current.getY();
-            int z = current.getZ();
+        AABB findBounds() {
+            if (!initializeSearch()) return null;
+
+            final int[] dx = {-1, 1, 0, 0, 0, 0};
+            final int[] dy = {0, 0, -1, 1, 0, 0};
+            final int[] dz = {0, 0, 0, 0, -1, 1};
+
+            while (!queue.isEmpty() && iterations++ < MAX_ITERATIONS) {
+                if (iterations % 100 == 0 && shouldEarlyTerminate()) {
+                    break;
+                }
+
+                BlockPos current = queue.poll();
+                updateBounds(current);
+
+                for (int i = 0; i < 6; i++) {
+                    processNeighbor(current, dx[i], dy[i], dz[i]);
+                }
+            }
+
+            if ((maxX - minX) * (maxY - minY) * (maxZ - minZ) > MAX_SEARCH_VOLUME) {
+                return null;
+            }
+
+            return new AABB(minX - 1, minY - 1, minZ - 1,
+                    maxX + 2, maxY + 2, maxZ + 2);
+        }
+
+        private boolean initializeSearch() {
+            int relX = start.getX() - offsetX;
+            int relY = start.getY() - offsetY;
+            int relZ = start.getZ() - offsetZ;
+
+            if (relX < 0 || relX >= sizeX || relY < 0 || relY >= sizeY || relZ < 0 || relZ >= sizeZ) {
+                return false;
+            }
+
+            if (!isPassable(level, start)) {
+                return false;
+            }
+
+            visited[relX][relY][relZ] = true;
+            queue.add(start);
+            return true;
+        }
+
+        private void updateBounds(BlockPos pos) {
+            int x = pos.getX();
+            int y = pos.getY();
+            int z = pos.getZ();
 
             if (x < minX) minX = x;
             if (x > maxX) maxX = x;
@@ -192,34 +449,366 @@ public class RoomAcousticsAnalyzer {
             if (y > maxY) maxY = y;
             if (z < minZ) minZ = z;
             if (z > maxZ) maxZ = z;
+        }
 
-            for (int i = 0; i < 6; i++) {
-                int nx = x + dxArray[i];
-                int ny = y + dyArray[i];
-                int nz = z + dzArray[i];
+        private void processNeighbor(BlockPos current, int dx, int dy, int dz) {
+            int nx = current.getX() + dx;
+            int ny = current.getY() + dy;
+            int nz = current.getZ() + dz;
 
-                if (nx < searchBounds.minX || nx > searchBounds.maxX ||
-                        ny < searchBounds.minY || ny > searchBounds.maxY ||
-                        nz < searchBounds.minZ || nz > searchBounds.maxZ) {
-                    continue;
+            int relX = nx - offsetX;
+            int relY = ny - offsetY;
+            int relZ = nz - offsetZ;
+
+            if (relX < 0 || relX >= sizeX || relY < 0 || relY >= sizeY || relZ < 0 || relZ >= sizeZ) {
+                return;
+            }
+
+            if (!visited[relX][relY][relZ]) {
+                BlockPos neighbor = new BlockPos(nx, ny, nz);
+                if (isPassable(level, neighbor)) {
+                    visited[relX][relY][relZ] = true;
+                    queue.add(neighbor);
                 }
+            }
+        }
 
-                int relX = nx - offsetX;
-                int relY = ny - offsetY;
-                int relZ = nz - offsetZ;
+        private boolean shouldEarlyTerminate() {
+            int volume = (maxX - minX) * (maxY - minY) * (maxZ - minZ);
+            return volume > 10000 && iterations > 500;
+        }
+    }
 
-                if (!visited[relX][relY][relZ]) {
-                    BlockPos neighbor = new BlockPos(nx, ny, nz);
-                    if (isPassable(level, neighbor)) {
-                        visited[relX][relY][relZ] = true;
-                        queue.add(neighbor);
+    private static class RoomDataCollector {
+        private final Level level;
+        private final AABB bounds;
+        private final AdaptiveSampler sampler;
+
+        static class RoomData {
+            final double surfaceArea;
+            final double totalAbsorptionArea;
+            final double totalReflectionArea;
+            final double averageAbsorption;
+            final double averageReflectivity;
+            final double avgWallDistance;
+            final boolean isEnclosed;
+            final Map<String, Double> materialAbsorptionMap;
+
+            RoomData(double surfaceArea, double totalAbsorptionArea,
+                     double totalReflectionArea, double averageAbsorption,
+                     double averageReflectivity, double avgWallDistance,
+                     boolean isEnclosed, Map<String, Double> materialAbsorptionMap) {
+                this.surfaceArea = surfaceArea;
+                this.totalAbsorptionArea = totalAbsorptionArea;
+                this.totalReflectionArea = totalReflectionArea;
+                this.averageAbsorption = averageAbsorption;
+                this.averageReflectivity = averageReflectivity;
+                this.avgWallDistance = avgWallDistance;
+                this.isEnclosed = isEnclosed;
+                this.materialAbsorptionMap = materialAbsorptionMap;
+            }
+        }
+
+        RoomDataCollector(Level level, AABB bounds, AdaptiveSampler sampler) {
+            this.level = level;
+            this.bounds = bounds;
+            this.sampler = sampler;
+        }
+
+        RoomData collectData() {
+            int minX = (int) Math.floor(bounds.minX);
+            int minY = (int) Math.floor(bounds.minY);
+            int minZ = (int) Math.floor(bounds.minZ);
+            int maxX = (int) Math.ceil(bounds.maxX);
+            int maxY = (int) Math.ceil(bounds.maxY);
+            int maxZ = (int) Math.ceil(bounds.maxZ);
+
+            int sampleInterval = sampler.getSampleInterval(
+                    (maxX - minX) * (maxY - minY) * (maxZ - minZ)
+            );
+
+            List<CompletableFuture<PartialResult>> futures = new ArrayList<>();
+            int chunkSize = 16;
+
+            for (int cx = minX; cx <= maxX; cx += chunkSize) {
+                for (int cz = minZ; cz <= maxZ; cz += chunkSize) {
+                    final int startX = cx;
+                    final int startZ = cz;
+                    final int endX = Math.min(cx + chunkSize - 1, maxX);
+                    final int endZ = Math.min(cz + chunkSize - 1, maxZ);
+
+                    futures.add(CompletableFuture.supplyAsync(() ->
+                                    processChunk(startX, endX, minY, maxY, startZ, endZ, sampleInterval),
+                            computePool
+                    ));
+                }
+            }
+
+            double totalSurfaceArea = 0;
+            double totalAbsorptionArea = 0;
+            double totalReflectionArea = 0;
+            int totalSurfaceCount = 0;
+            Map<String, Double> materialMap = new ConcurrentHashMap<>();
+
+            for (CompletableFuture<PartialResult> future : futures) {
+                try {
+                    PartialResult result = future.get();
+                    totalSurfaceArea += result.surfaceArea;
+                    totalAbsorptionArea += result.absorptionArea;
+                    totalReflectionArea += result.reflectionArea;
+                    totalSurfaceCount += result.surfaceCount;
+
+                    result.materialContributions.forEach((material, absorption) ->
+                            materialMap.merge(material, absorption, Double::sum)
+                    );
+                } catch (Exception ignored) {
+                }
+            }
+
+            boolean isEnclosed = checkEnclosure();
+            double avgAbsorption = totalSurfaceCount > 0 ? totalAbsorptionArea / totalSurfaceCount : 0.1;
+            double avgReflectivity = totalSurfaceCount > 0 ? totalReflectionArea / totalSurfaceCount : 0.9;
+            double avgWallDistance = calculateAverageWallDistance(bounds);
+
+            int finalTotalSurfaceCount = totalSurfaceCount;
+            materialMap.replaceAll((k, v) -> v / finalTotalSurfaceCount);
+
+            return new RoomData(
+                    totalSurfaceArea, totalAbsorptionArea, totalReflectionArea,
+                    avgAbsorption, avgReflectivity, avgWallDistance,
+                    isEnclosed, materialMap
+            );
+        }
+
+        private PartialResult processChunk(int startX, int endX, int minY, int maxY,
+                                           int startZ, int endZ, int sampleInterval) {
+            double surfaceArea = 0;
+            double absorptionArea = 0;
+            double reflectionArea = 0;
+            int surfaceCount = 0;
+            Map<String, Double> materialMap = new HashMap<>();
+
+            for (int x = startX; x <= endX; x += sampleInterval) {
+                for (int z = startZ; z <= endZ; z += sampleInterval) {
+                    for (int y = minY; y <= maxY; y += sampleInterval) {
+                        BlockPos pos = new BlockPos(x, y, z);
+                        if (!level.isLoaded(pos)) continue;
+
+                        level.getBlockState(pos);
+                        if (isPassable(level, pos)) {
+                            surfaceArea += processAirBlock(x, y, z, materialMap);
+                            surfaceCount++;
+                        }
+                    }
+                }
+            }
+
+            return new PartialResult(surfaceArea, absorptionArea, reflectionArea, surfaceCount, materialMap);
+        }
+
+        private double processAirBlock(int x, int y, int z, Map<String, Double> materialMap) {
+            double area = 0;
+
+            area += checkWall(x + 1, y, z, materialMap);
+            area += checkWall(x - 1, y, z, materialMap);
+            area += checkWall(x, y + 1, z, materialMap);
+            area += checkWall(x, y - 1, z, materialMap);
+            area += checkWall(x, y, z + 1, materialMap);
+            area += checkWall(x, y, z - 1, materialMap);
+
+            return area;
+        }
+
+        private double checkWall(int wx, int wy, int wz, Map<String, Double> materialMap) {
+            BlockPos wallPos = new BlockPos(wx, wy, wz);
+            if (!level.isLoaded(wallPos)) return 0;
+
+            BlockState state = level.getBlockState(wallPos);
+            if (!isPassable(level, wallPos)) {
+                double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                BlockPhysicsUtil.getReflectivityCoefficient(state);
+
+                String material = BlockPhysicsUtil.getMaterialType(state);
+                materialMap.merge(material, absorption, Double::sum);
+
+                return 1.0;
+            }
+            return 0;
+        }
+
+        private boolean checkEnclosure() {
+            return true;
+        }
+
+        private static class PartialResult {
+            final double surfaceArea;
+            final double absorptionArea;
+            final double reflectionArea;
+            final int surfaceCount;
+            final Map<String, Double> materialContributions;
+
+            PartialResult(double surfaceArea, double absorptionArea, double reflectionArea,
+                          int surfaceCount, Map<String, Double> materialContributions) {
+                this.surfaceArea = surfaceArea;
+                this.absorptionArea = absorptionArea;
+                this.reflectionArea = reflectionArea;
+                this.surfaceCount = surfaceCount;
+                this.materialContributions = materialContributions;
+            }
+        }
+    }
+
+    private static RoomAnalysis performQuickAnalysis(Level level, Vec3 center) {
+        BlockPos centerPos = BlockPos.containing(center);
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    BlockPos pos = centerPos.offset(dx * 2, dy * 2, dz * 2);
+                    if (level.isLoaded(pos)) {
+                        BlockState state = level.getBlockState(pos);
+                        if (!state.isAir() && state.blocksMotion()) {
+                            BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                        }
                     }
                 }
             }
         }
 
-        return new AABB(minX - 1, minY - 1, minZ - 1,
-                maxX + 2, maxY + 2, maxZ + 2);
+        AABB bounds = createQuickBounds(centerPos, 8);
+        double volume = calculateVolume(bounds);
+        RoomType roomType = RoomType.fromVolume(volume);
+
+        return createLowQualityAnalysis(level, center, bounds, volume, roomType, 0.5);
+    }
+
+    private static RoomAnalysis performOptimizedAnalysis(Level level, BlockPos center) {
+        int radius = Math.min(24, RoomType.MEDIUM.searchRadius);
+        AABB bounds = createQuickBounds(center, radius);
+        double volume = calculateVolume(bounds);
+        RoomType roomType = RoomType.fromVolume(volume);
+        double quality = 0.6 * performanceScaleFactor.get();
+
+        return createLowQualityAnalysis(level, new Vec3(center.getX(), center.getY(), center.getZ()),
+                bounds, volume, roomType, quality);
+    }
+
+    private static RoomAnalysis performFallbackAnalysis(Level level, Vec3 center) {
+        BlockPos centerPos = BlockPos.containing(center);
+        AABB bounds = createQuickBounds(centerPos, 16);
+        double volume = calculateVolume(bounds);
+        RoomType roomType = RoomType.fromVolume(volume);
+
+        return createLowQualityAnalysis(level, center, bounds, volume, roomType, 0.3);
+    }
+
+    private static RoomAnalysis createPredictedAnalysis(Vec3 center, PredictiveEntry prediction) {
+        AABB bounds = createQuickBounds(BlockPos.containing(center), prediction.predictedType.searchRadius);
+        double volume = calculateVolume(bounds);
+        double quality = prediction.confidence / 100.0 * 0.8;
+
+        double[] absorptionByFrequency = new double[8];
+        Arrays.fill(absorptionByFrequency, prediction.predictedAbsorption);
+
+        Vec3 dimensions = new Vec3(
+                bounds.maxX - bounds.minX,
+                bounds.maxY - bounds.minY,
+                bounds.maxZ - bounds.minZ
+        );
+
+        double schroederFrequency = calculateSchroederFrequency(volume);
+        double surfaceArea = estimateSurfaceArea(volume);
+        double meanFreePath = 4.0 * volume / surfaceArea;
+        double criticalDistance = calculateCriticalDistance(volume, prediction.predictedAbsorption);
+        double modalDensity = calculateModalDensity(volume, schroederFrequency);
+        double avgWallDistance = calculateAverageWallDistance(bounds);
+
+        return new RoomAnalysis(
+                bounds, dimensions, volume, surfaceArea,
+                surfaceArea * prediction.predictedAbsorption,
+                surfaceArea * prediction.predictedReflectivity,
+                prediction.predictedAbsorption, prediction.predictedReflectivity,
+                avgWallDistance, true, prediction.predictedType,
+                schroederFrequency, meanFreePath, criticalDistance,
+                modalDensity, absorptionByFrequency, quality,
+                System.currentTimeMillis(), true
+        );
+    }
+
+    private static RoomAnalysis createLowQualityAnalysis(Level level, Vec3 center, AABB bounds,
+                                                         double volume, RoomType roomType, double quality) {
+        double estimatedAbsorption = estimateMaterialProperty(level, BlockPos.containing(center));
+        double estimatedReflectivity = 1.0 - estimatedAbsorption * 0.8;
+
+        Vec3 dimensions = new Vec3(
+                bounds.maxX - bounds.minX,
+                bounds.maxY - bounds.minY,
+                bounds.maxZ - bounds.minZ
+        );
+
+        double surfaceArea = estimateSurfaceArea(volume);
+        double schroederFrequency = calculateSchroederFrequency(volume);
+        double meanFreePath = 4.0 * volume / surfaceArea;
+        double criticalDistance = calculateCriticalDistance(volume, estimatedAbsorption);
+        double modalDensity = calculateModalDensity(volume, schroederFrequency);
+        double[] absorptionByFrequency = createEstimatedAbsorptionArray(estimatedAbsorption);
+        double avgWallDistance = calculateAverageWallDistance(bounds);
+
+        return new RoomAnalysis(
+                bounds, dimensions, volume, surfaceArea,
+                surfaceArea * estimatedAbsorption,
+                surfaceArea * estimatedReflectivity,
+                estimatedAbsorption, estimatedReflectivity,
+                avgWallDistance, true, roomType,
+                schroederFrequency, meanFreePath, criticalDistance,
+                modalDensity, absorptionByFrequency, quality,
+                System.currentTimeMillis(), false
+        );
+    }
+
+    private static long computeSpatialKey(BlockPos pos) {
+        int chunkX = pos.getX() >> 4;
+        int chunkZ = pos.getZ() >> 4;
+        int localX = pos.getX() & 15;
+        int localZ = pos.getZ() & 15;
+        int sectionY = SectionPos.blockToSectionCoord(pos.getY());
+
+        return ((long) chunkX << 48) | ((long) chunkZ << 32) |
+                ((long) sectionY << 16) | (localX << 8) | localZ;
+    }
+
+    private static long computeChunkKey(BlockPos pos) {
+        int chunkX = pos.getX() >> 4;
+        int chunkZ = pos.getZ() >> 4;
+        return ((long) chunkX << 32) | (chunkZ & 0xFFFFFFFFL);
+    }
+
+    private static void performCacheMaintenance() {
+        cacheLock.writeLock().lock();
+        try {
+            long currentTime = System.currentTimeMillis();
+
+            spatialCache.entrySet().removeIf(entry -> currentTime - entry.getValue().timestamp > 30000);
+
+            predictiveCache.entrySet().removeIf(entry -> currentTime - entry.getValue().lastUpdated > 120000);
+
+            if (spatialCache.size() > 1000) {
+                spatialCache.clear();
+                bloomFilter = new BloomFilter(8192);
+            }
+        } finally {
+            cacheLock.writeLock().unlock();
+        }
+    }
+
+    private static void adjustPerformanceScaling() {
+        long avgTime = totalProcessingTime.get() / Math.max(1, activeAnalyses.get());
+        if (avgTime > TARGET_FRAME_TIME_MS * 2) {
+            performanceScaleFactor.set(Math.max(0.3, performanceScaleFactor.get() * 0.8));
+        } else if (avgTime < TARGET_FRAME_TIME_MS / 2) {
+            performanceScaleFactor.set(Math.min(1.0, performanceScaleFactor.get() * 1.2));
+        }
+        totalProcessingTime.set(0);
     }
 
     private static boolean isPassable(Level level, BlockPos pos) {
@@ -230,201 +819,32 @@ public class RoomAcousticsAnalyzer {
                 !state.blocksMotion();
     }
 
-    private static AABB createBoundedAABB(BlockPos center, int radius) {
+    private static AABB createQuickBounds(BlockPos center, int radius) {
+        int verticalRadius = Math.min(radius, 16);
         return new AABB(
-                center.getX() - radius, center.getY() - radius, center.getZ() - radius,
-                center.getX() + radius, center.getY() + radius, center.getZ() + radius
+                center.getX() - radius, center.getY() - verticalRadius, center.getZ() - radius,
+                center.getX() + radius, center.getY() + verticalRadius, center.getZ() + radius
         );
     }
 
-    private static class RoomAnalysisData {
-        final double surfaceArea;
-        final double totalAbsorptionArea;
-        final double totalReflectionArea;
-        final double averageAbsorption;
-        final double averageReflectivity;
-        final double avgWallDistance;
-        final boolean isEnclosed;
-        final Map<String, Double> materialAbsorptionMap;
+    private static double calculateDynamicQuality(AABB bounds, double volume, int sampleCount) {
+        double aspectRatio = Math.max(
+                bounds.maxX - bounds.minX,
+                Math.max(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ)
+        ) / Math.min(
+                bounds.maxX - bounds.minX,
+                Math.min(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ)
+        );
 
-        RoomAnalysisData(double surfaceArea, double totalAbsorptionArea,
-                         double totalReflectionArea, double averageAbsorption,
-                         double averageReflectivity, double avgWallDistance,
-                         boolean isEnclosed, Map<String, Double> materialAbsorptionMap) {
-            this.surfaceArea = surfaceArea;
-            this.totalAbsorptionArea = totalAbsorptionArea;
-            this.totalReflectionArea = totalReflectionArea;
-            this.averageAbsorption = averageAbsorption;
-            this.averageReflectivity = averageReflectivity;
-            this.avgWallDistance = avgWallDistance;
-            this.isEnclosed = isEnclosed;
-            this.materialAbsorptionMap = materialAbsorptionMap;
-        }
-    }
+        double quality = 1.0;
+        if (volume > 50000) quality *= 0.6;
+        else if (volume > 10000) quality *= 0.8;
 
-    private static RoomAnalysisData collectRoomData(Level level, AABB bounds) {
-        int minX = (int) Math.floor(bounds.minX);
-        int minY = (int) Math.floor(bounds.minY);
-        int minZ = (int) Math.floor(bounds.minZ);
-        int maxX = (int) Math.ceil(bounds.maxX);
-        int maxY = (int) Math.ceil(bounds.maxY);
-        int maxZ = (int) Math.ceil(bounds.maxZ);
+        if (aspectRatio > 8.0) quality *= 0.7;
+        quality *= Math.min(1.0, sampleCount / 8.0);
+        quality *= performanceScaleFactor.get();
 
-        int sizeX = maxX - minX + 3;
-        int sizeY = maxY - minY + 3;
-        int sizeZ = maxZ - minZ + 3;
-
-        boolean[][][] solidBlocks = new boolean[sizeX][sizeY][sizeZ];
-        Map<String, Integer> materialCount = new HashMap<>();
-        Map<String, Double> materialAbsorptionMap = new HashMap<>();
-
-        for (int x = minX; x <= maxX; x++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    BlockPos pos = new BlockPos(x, y, z);
-                    if (level.isLoaded(pos) && !isPassable(level, pos)) {
-                        solidBlocks[x - minX + 1][y - minY + 1][z - minZ + 1] = true;
-                        String materialType = BlockPhysicsUtil.getMaterialType(level.getBlockState(pos));
-                        materialCount.put(materialType, materialCount.getOrDefault(materialType, 0) + 1);
-                    }
-                }
-            }
-        }
-
-        double surfaceArea = 0.0;
-        double totalAbsorptionArea = 0.0;
-        double totalReflectionArea = 0.0;
-        int surfaceCount = 0;
-
-        for (int x = minX; x <= maxX; x++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    int bx = x - minX + 1;
-                    int by = y - minY + 1;
-                    int bz = z - minZ + 1;
-
-                    if (!solidBlocks[bx][by][bz]) {
-                        if (solidBlocks[bx + 1][by][bz]) {
-                            surfaceArea += 1.0;
-                            surfaceCount++;
-                            BlockPos wallPos = new BlockPos(x + 1, y, z);
-                            BlockState state = level.getBlockState(wallPos);
-                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
-                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
-                            totalAbsorptionArea += absorption;
-                            totalReflectionArea += reflectivity;
-
-                            String material = BlockPhysicsUtil.getMaterialType(state);
-                            materialAbsorptionMap.put(material,
-                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
-                        }
-                        if (solidBlocks[bx - 1][by][bz]) {
-                            surfaceArea += 1.0;
-                            surfaceCount++;
-                            BlockPos wallPos = new BlockPos(x - 1, y, z);
-                            BlockState state = level.getBlockState(wallPos);
-                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
-                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
-                            totalAbsorptionArea += absorption;
-                            totalReflectionArea += reflectivity;
-
-                            String material = BlockPhysicsUtil.getMaterialType(state);
-                            materialAbsorptionMap.put(material,
-                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
-                        }
-                        if (solidBlocks[bx][by + 1][bz]) {
-                            surfaceArea += 1.0;
-                            surfaceCount++;
-                            BlockPos wallPos = new BlockPos(x, y + 1, z);
-                            BlockState state = level.getBlockState(wallPos);
-                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
-                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
-                            totalAbsorptionArea += absorption;
-                            totalReflectionArea += reflectivity;
-
-                            String material = BlockPhysicsUtil.getMaterialType(state);
-                            materialAbsorptionMap.put(material,
-                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
-                        }
-                        if (solidBlocks[bx][by - 1][bz]) {
-                            surfaceArea += 1.0;
-                            surfaceCount++;
-                            BlockPos wallPos = new BlockPos(x, y - 1, z);
-                            BlockState state = level.getBlockState(wallPos);
-                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
-                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
-                            totalAbsorptionArea += absorption;
-                            totalReflectionArea += reflectivity;
-
-                            String material = BlockPhysicsUtil.getMaterialType(state);
-                            materialAbsorptionMap.put(material,
-                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
-                        }
-                        if (solidBlocks[bx][by][bz + 1]) {
-                            surfaceArea += 1.0;
-                            surfaceCount++;
-                            BlockPos wallPos = new BlockPos(x, y, z + 1);
-                            BlockState state = level.getBlockState(wallPos);
-                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
-                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
-                            totalAbsorptionArea += absorption;
-                            totalReflectionArea += reflectivity;
-
-                            String material = BlockPhysicsUtil.getMaterialType(state);
-                            materialAbsorptionMap.put(material,
-                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
-                        }
-                        if (solidBlocks[bx][by][bz - 1]) {
-                            surfaceArea += 1.0;
-                            surfaceCount++;
-                            BlockPos wallPos = new BlockPos(x, y, z - 1);
-                            BlockState state = level.getBlockState(wallPos);
-                            double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(state);
-                            double reflectivity = BlockPhysicsUtil.getReflectivityCoefficient(state);
-                            totalAbsorptionArea += absorption;
-                            totalReflectionArea += reflectivity;
-
-                            String material = BlockPhysicsUtil.getMaterialType(state);
-                            materialAbsorptionMap.put(material,
-                                    materialAbsorptionMap.getOrDefault(material, 0.0) + absorption);
-                        }
-                    }
-                }
-            }
-        }
-
-        boolean isEnclosed = isEnclosedSimplified(level, bounds, solidBlocks, minX, minY, minZ);
-        double averageAbsorption = surfaceCount > 0 ? totalAbsorptionArea / surfaceCount : 0.1;
-        double averageReflectivity = surfaceCount > 0 ? totalReflectionArea / surfaceCount : 0.9;
-        double avgWallDistance = calculateAverageWallDistance(bounds);
-
-        for (String material : materialAbsorptionMap.keySet()) {
-            materialAbsorptionMap.put(material, materialAbsorptionMap.get(material) / surfaceCount);
-        }
-
-        return new RoomAnalysisData(surfaceArea, totalAbsorptionArea, totalReflectionArea,
-                averageAbsorption, averageReflectivity, avgWallDistance, isEnclosed, materialAbsorptionMap);
-    }
-
-    private static boolean isEnclosedSimplified(Level level, AABB bounds,
-                                                boolean[][][] solidBlocks,
-                                                int minX, int minY, int minZ) {
-        int sizeX = solidBlocks.length;
-        int sizeY = solidBlocks[0].length;
-        int sizeZ = solidBlocks[0][0].length;
-
-        int sampleCount = Math.min(20, sizeX * sizeZ);
-        for (int i = 0; i < sampleCount; i++) {
-            int x = minX + (i * sizeX / sampleCount);
-            int z = minZ + (i * sizeZ / sampleCount);
-
-            if (!solidBlocks[x - minX + 1][sizeY - 1][z - minZ + 1] ||
-                    !solidBlocks[x - minX + 1][0][z - minZ + 1]) {
-                return false;
-            }
-        }
-
-        return true;
+        return Math.max(MIN_ANALYSIS_QUALITY, quality);
     }
 
     private static double calculateVolume(AABB bounds) {
@@ -441,12 +861,44 @@ public class RoomAcousticsAnalyzer {
         return (width + height + depth) / 6.0;
     }
 
+    private static double estimateSurfaceArea(double volume) {
+        return 6.0 * Math.pow(volume, 2.0/3.0);
+    }
+
+    private static double estimateMaterialProperty(Level level, BlockPos center) {
+        int samples = 0;
+        double total = 0;
+
+        for (int dx = -12; dx <= 12; dx += 4) {
+            for (int dz = -12; dz <= 12; dz += 4) {
+                BlockPos pos = center.offset(dx, 0, dz);
+                if (level.isLoaded(pos)) {
+                    BlockState state = level.getBlockState(pos);
+                    if (!state.isAir()) {
+                        total += BlockPhysicsUtil.getAbsorptionCoefficient(state);
+                        samples++;
+                    }
+                }
+            }
+        }
+
+        return samples > 0 ? total / samples : 0.15;
+    }
+
+    private static double[] createEstimatedAbsorptionArray(double baseAbsorption) {
+        double[] absorption = new double[8];
+        for (int i = 0; i < absorption.length; i++) {
+            absorption[i] = baseAbsorption * (0.9 + 0.1 * Math.random());
+        }
+        return absorption;
+    }
+
     private static double calculateSchroederFrequency(double volume) {
-        return 2000.0 * Math.sqrt(0.05 / volume);
+        return 2000.0 * Math.sqrt(0.05 / Math.max(volume, 0.1));
     }
 
     private static double calculateCriticalDistance(double volume, double averageAbsorption) {
-        double roomConstant = volume * averageAbsorption / (1.0 - averageAbsorption);
+        double roomConstant = volume * averageAbsorption / Math.max(1.0 - averageAbsorption, 0.01);
         return 0.057 * Math.sqrt(volume / (Math.PI * roomConstant));
     }
 
@@ -478,104 +930,41 @@ public class RoomAcousticsAnalyzer {
                     default -> 1.0;
                 };
 
-                totalAbsorption += baseAbsorption * frequencyFactor;
+                totalAbsorption += baseAbsorption * Math.max(0.0, Math.min(1.0, frequencyFactor));
                 count++;
             }
 
-            absorptionByFrequency[i] = count > 0 ? totalAbsorption / count : 0.1;
+            absorptionByFrequency[i] = count > 0 ?
+                    Math.max(0.05, Math.min(1.0, totalAbsorption / count)) : 0.1;
         }
 
         return absorptionByFrequency;
     }
 
-    public static double calculateReverberationTime(RoomAnalysis room) {
-        if (!room.isEnclosed) return 0.1;
+    public static void cleanup() {
+        computePool.shutdown();
+        ioBoundExecutor.shutdown();
+        maintenanceExecutor.shutdown();
 
-        double V = room.volume;
-        double S = room.surfaceArea;
-        double α = room.averageAbsorption;
-
-        if (S * α == 0) return 0.1;
-
-        double rt60Sabine = 0.161 * V / (S * α);
-
-        double eyringCorrection = 0.0;
-        if (α < 0.9) {
-            eyringCorrection = -0.161 * V / (S * Math.log(1.0 - α));
+        try {
+            if (!computePool.awaitTermination(1, TimeUnit.SECONDS)) {
+                computePool.shutdownNow();
+            }
+            if (!ioBoundExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+                ioBoundExecutor.shutdownNow();
+            }
+            if (!maintenanceExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+                maintenanceExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
-        double rt60 = (rt60Sabine + eyringCorrection) / 2.0;
-
-        switch (room.roomType) {
-            case TINY:
-                rt60 *= 0.3;
-                break;
-            case SMALL:
-                rt60 *= 0.6;
-                break;
-            case MEDIUM:
-                rt60 *= 0.9;
-                break;
-            case LARGE:
-                rt60 *= 1.2;
-                break;
-            case HUGE:
-                rt60 *= 1.5;
-                break;
-            case CATHEDRAL:
-                rt60 *= 2.0;
-                break;
-        }
-
-        return Math.max(0.1, Math.min(12.0, rt60));
-    }
-
-    public static double calculateEarlyReflectionsDelay(RoomAnalysis room) {
-        return room.meanFreePath / 343.0;
-    }
-
-    public static double calculateLateReverbDelay(RoomAnalysis room) {
-        return room.criticalDistance / 343.0;
-    }
-
-    public static double calculateDensity(RoomAnalysis room) {
-        double baseDensity = 0.5 + 0.5 * Math.exp(-room.volume / 10000.0);
-        baseDensity *= (1.0 - room.averageAbsorption * 0.5);
-        baseDensity *= Math.min(1.0, room.modalDensity / 1000.0);
-        return Math.max(0.1, Math.min(1.0, baseDensity));
-    }
-
-    public static double calculateDiffusion(RoomAnalysis room) {
-        double baseDiffusion = 0.7;
-        double irregularity = room.surfaceArea / Math.pow(room.volume, 2.0/3.0);
-        baseDiffusion += Math.min(0.3, irregularity * 0.1);
-        baseDiffusion += room.averageAbsorption * 0.2;
-
-        double aspectRatio = room.dimensions.x / Math.max(room.dimensions.y, room.dimensions.z);
-        baseDiffusion *= (1.0 - Math.abs(1.0 - aspectRatio) * 0.2);
-
-        return Math.max(0.3, Math.min(1.0, baseDiffusion));
-    }
-
-    public static double calculateHighFrequencyGain(RoomAnalysis room) {
-        double baseGain = 0.94 - room.averageAbsorption * 0.6;
-
-        if (room.absorptionByFrequency.length > 3) {
-            double hfAbsorption = room.absorptionByFrequency[3];
-            baseGain -= hfAbsorption * 0.3;
-        }
-
-        return Math.max(0.18, Math.min(1.0, baseGain));
-    }
-
-    public static double calculateDecayHFRatio(RoomAnalysis room) {
-        double baseRatio = 1.08 - room.averageAbsorption * 0.35;
-
-        if (room.absorptionByFrequency.length > 3) {
-            double hfAbsorption = room.absorptionByFrequency[3];
-            baseRatio -= hfAbsorption * 0.2;
-        }
-
-        return Math.max(0.3, Math.min(2.0, baseRatio));
+        spatialCache.clear();
+        predictiveCache.clear();
+        bloomFilter = new BloomFilter(8192);
+        activeAnalyses.set(0);
+        totalProcessingTime.set(0);
+        performanceScaleFactor.set(1.0);
     }
 }
