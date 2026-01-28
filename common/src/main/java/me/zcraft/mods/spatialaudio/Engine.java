@@ -381,7 +381,7 @@ public class Engine {
 				soundChunk
 		);
 
-		if (pC.dRays) Renderer.addSoundBounceRay(soundPos, rayHit.getLocation(), ChatFormatting.GREEN.getColor());
+		if (pC.dRays) Renderer.addSoundBounceRay(soundPos, rayHit.getLocation());
 
 		if (rayHit.isMissed()) {
 			double[] empty = new double[pC.nRayBounces];
@@ -433,7 +433,7 @@ public class Engine {
 			color = ChatFormatting.WHITE.getColor();
 			shared[0] = 1;
 		}
-		if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, finalRayHit.getLocation(), color);
+		if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, finalRayHit.getLocation());
 
 		for (int i = 1; i < pC.nRayBounces; i++) {
 			double absorption = BlockPhysicsUtil.getAbsorptionCoefficient(lastHitState);
@@ -463,7 +463,7 @@ public class Engine {
 					mc.level, lastHitBlock, rayHit.chunk);
 
 			if (rayHit.isMissed()) {
-				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, rayHit.getLocation(), ChatFormatting.DARK_RED.getColor());
+				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, rayHit.getLocation());
 				missed = Math.pow(totalReflectivity, pC.globalReflRcp);
 				break;
 			}
@@ -476,14 +476,14 @@ public class Engine {
 			if (absorption > 0.7) {
 				double maxRemainingDistance = pC.maxTraceDist * (1.0 - absorption * 0.7);
 				if (totalDistance > maxRemainingDistance) {
-					if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.DARK_PURPLE.getColor());
+					if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos);
 					missed = Math.pow(totalReflectivity, pC.globalReflRcp);
 					break;
 				}
 			}
 
 			if (pC.maxTraceDist - totalDistance < newRayHitPos.distanceTo(listenerPos)) {
-				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.DARK_PURPLE.getColor());
+				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos);
 				missed = Math.pow(totalReflectivity, pC.globalReflRcp);
 				break;
 			}
@@ -491,11 +491,11 @@ public class Engine {
 			final double newBlockReflectivity = getBlockReflectivity(rayHit.getBlockState());
 			totalReflectivity *= newBlockReflectivity;
 			if (totalReflectivity < minEnergy){
-				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.DARK_PURPLE.getColor());
+				if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos);
 				break;
 			}
 
-			if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos, ChatFormatting.BLUE.getColor());
+			if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, newRayHitPos);
 
 			lastHitState = rayHit.getBlockState();
 			lastBlockReflectivity = newBlockReflectivity;
@@ -517,7 +517,7 @@ public class Engine {
 				color = ChatFormatting.WHITE.getColor();
 				shared[i] = 1;
 			}
-			if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, finalRayHit.getLocation(), color);
+			if (pC.dRays) Renderer.addSoundBounceRay(lastHitPos, finalRayHit.getLocation());
 		}
 
 		return new ReflectedRayData(
